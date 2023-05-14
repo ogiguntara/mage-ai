@@ -138,6 +138,7 @@ def __custom_output():
     from mage_ai.shared.parsers import encode_complex, sample_output
     import json
     import pandas as pd
+    import polars as pl
     import simplejson
     import warnings
 
@@ -174,6 +175,8 @@ def __custom_output():
             ignore_nan=True,
         )
         return print(f'[__internal_output__]{{_json_string}}')
+    elif isinstance(_internal_output_return, pl.DataFrame):
+        return print(_internal_output_return)
     elif type(_internal_output_return).__module__ == 'pyspark.sql.dataframe':
         _sample = _internal_output_return.limit({DATAFRAME_SAMPLE_COUNT_PREVIEW}).toPandas()
         _columns = _sample.columns.tolist()[:40]
@@ -218,7 +221,6 @@ def add_execution_code(
     block_uuid: str,
     code: str,
     global_vars,
-    analyze_outputs: bool = False,
     block_type: BlockType = None,
     extension_uuid: str = None,
     kernel_name: str = None,
@@ -283,7 +285,7 @@ def execute_custom_code():
 
     upstream_blocks = {upstream_blocks}
     if upstream_blocks and len(upstream_blocks) >= 1:
-        blocks = pipeline.get_blocks({upstream_blocks}, widget={widget})
+        blocks = pipeline.get_blocks({upstream_blocks})
         block.upstream_blocks = blocks
 
     code = r\'\'\'
@@ -303,10 +305,9 @@ def execute_custom_code():
     block_output = block.execute_with_callback(
         custom_code=code,
         global_vars=global_vars,
-        analyze_outputs={analyze_outputs},
         run_settings=json.loads('{run_settings_json}'),
-        update_status={update_status},
         test_execution=True,
+        update_status={update_status},
     )
     if {run_tests}:
         block.run_tests(

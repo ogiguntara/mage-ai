@@ -3,6 +3,19 @@ import { ScheduleTypeEnum } from './PipelineScheduleType';
 
 export const RunStatus = RunStatusEnum;
 
+export const RUNNING_STATUSES = [
+  RunStatus.INITIAL,
+  RunStatus.RUNNING,
+];
+
+export const COMPLETED_STATUSES = [
+  RunStatus.CANCELLED,
+  RunStatus.COMPLETED,
+  RunStatus.FAILED,
+];
+
+export const MAGE_VARIABLES_KEY = '__mage_variables';
+
 export const RUN_STATUS_TO_LABEL = {
   [RunStatus.CANCELLED]: 'Cancelled',
   [RunStatus.COMPLETED]: 'Done',
@@ -78,7 +91,14 @@ interface PipelineRunMetricsType {
   source: string;
 }
 
+export type PipelineRunDateType = {
+  ds: string;
+  execution_date: string;
+  hr: string;
+};
+
 export default interface PipelineRunType {
+  backfill_id?: number;
   block_runs?: BlockRunType[];
   block_runs_count?: number;
   completed_at?: string;

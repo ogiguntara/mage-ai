@@ -26,6 +26,7 @@ import json
 import numpy as np
 import os
 import pandas as pd
+import polars as pl
 import traceback
 
 DATAFRAME_COLUMN_TYPES_FILE = 'data_column_types.json'
@@ -41,6 +42,7 @@ class VariableType(str, Enum):
     DATAFRAME = 'dataframe'
     DATAFRAME_ANALYSIS = 'dataframe_analysis'
     GEO_DATAFRAME = 'geo_dataframe'
+    POLARS_DATAFRAME = 'polars_dataframe'
     SPARK_DATAFRAME = 'spark_dataframe'
 
 
@@ -97,7 +99,7 @@ class Variable:
                 os.path.join(self.variable_dir_path, f'{self.uuid}', 'data.sh'))):
             self.variable_type = VariableType.GEO_DATAFRAME
         elif self.variable_type is None and \
-                len(self.storage.listdir(self.variable_path, suffix='.csv')) > 0 and \
+                len(self.storage.listdir(self.variable_path, suffix='.parquet')) > 0 and \
                 spark is not None:
             self.variable_type = VariableType.SPARK_DATAFRAME
 
@@ -195,6 +197,8 @@ class Variable:
         """
         if self.variable_type is None and type(data) is pd.DataFrame:
             self.variable_type = VariableType.DATAFRAME
+        elif self.variable_type is None and type(data) is pl.DataFrame:
+            self.variable_type = VariableType.POLARS_DATAFRAME
         elif is_spark_dataframe(data):
             self.variable_type = VariableType.SPARK_DATAFRAME
         elif is_geo_dataframe(data):
@@ -202,6 +206,8 @@ class Variable:
 
         if self.variable_type == VariableType.DATAFRAME:
             self.__write_parquet(data)
+        elif self.variable_type == VariableType.POLARS_DATAFRAME:
+            self.__write_polars_dataframe(data)
         elif self.variable_type == VariableType.SPARK_DATAFRAME:
             self.__write_spark_parquet(data)
         elif self.variable_type == VariableType.GEO_DATAFRAME:
@@ -220,6 +226,8 @@ class Variable:
         """
         if self.variable_type is None and type(data) is pd.DataFrame:
             self.variable_type = VariableType.DATAFRAME
+        elif self.variable_type is None and type(data) is pl.DataFrame:
+            self.variable_type = VariableType.POLARS_DATAFRAME
         elif is_spark_dataframe(data):
             self.variable_type = VariableType.SPARK_DATAFRAME
         elif is_geo_dataframe(data):
@@ -227,6 +235,8 @@ class Variable:
 
         if self.variable_type == VariableType.DATAFRAME:
             self.__write_parquet(data)
+        elif self.variable_type == VariableType.POLARS_DATAFRAME:
+            self.__write_polars_dataframe(data)
         elif self.variable_type == VariableType.SPARK_DATAFRAME:
             self.__write_spark_parquet(data)
         elif self.variable_type == VariableType.GEO_DATAFRAME:
@@ -240,7 +250,10 @@ class Variable:
         for k in DATAFRAME_ANALYSIS_KEYS:
             file_path = os.path.join(self.variable_path, f'{k}.json')
             if self.storage.path_exists(file_path):
-                self.storage.remove(file_path)
+                try:
+                    self.storage.remove(file_path)
+                except FileNotFoundError as err:
+                    print(f'Error deleting file {file_path}: {err}')
 
     def __delete_json(self) -> None:
         old_file_path = os.path.join(self.variable_dir_path, f'{self.uuid}.json')
@@ -374,7 +387,7 @@ class Variable:
             return None
         df = (
             spark.read
-            .format('csv')
+            .format('parquet')
             .option('header', 'true')
             .option('inferSchema', 'true')
             .option('delimiter', ',')
@@ -446,13 +459,37 @@ class Variable:
             )
         except Exception as err:
             print(f'Sample output error: {err}.')
+            traceback.print_exc()
+
+    def __write_polars_dataframe(self, data: pl.DataFrame) -> None:
+        self.storage.makedirs(self.variable_path, exist_ok=True)
+
+        self.storage.write_polars_dataframe(
+            data,
+            os.path.join(self.variable_path, DATAFRAME_PARQUET_FILE),
+        )
+
+        try:
+            sample_columns = data.columns[:DATAFRAME_SAMPLE_MAX_COLUMNS]
+            df_sample_output = data[
+                :DATAFRAME_SAMPLE_COUNT,
+                sample_columns,
+            ]
+
+            self.storage.write_polars_dataframe(
+                df_sample_output,
+                os.path.join(self.variable_path, DATAFRAME_PARQUET_SAMPLE_FILE),
+            )
+        except Exception as err:
+            print(f'Sample output error: {err}.')
+            traceback.print_exc()
 
     def __write_spark_parquet(self, data) -> None:
         (
             data.write
             .option('header', 'True')
             .mode('overwrite')
-            .csv(self.variable_path)
+            .parquet(self.variable_path)
         )
 
     def __read_dataframe_analysis(

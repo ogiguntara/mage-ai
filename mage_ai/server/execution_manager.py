@@ -63,9 +63,12 @@ def cancel_pipeline_execution(
     process if the process is alive.
     """
     current_process = pipeline_execution.current_pipeline_process
-    if current_process.is_alive():
+    if current_process and current_process.is_alive():
         pipeline_execution.current_pipeline_process.terminate()
-    pipeline_execution.current_message_task.cancel()
+
+    if pipeline_execution.current_message_task:
+        pipeline_execution.current_message_task.cancel()
+
     if not skip_publish_message:
         publish_message(
             'Pipeline execution cancelled... reverting state to previous iteration',

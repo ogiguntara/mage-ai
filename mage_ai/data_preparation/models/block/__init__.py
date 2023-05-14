@@ -1,33 +1,49 @@
+import asyncio
+import functools
+import json
+import os
+import sys
+import time
+import traceback
 from contextlib import redirect_stdout
 from datetime import datetime
-from inspect import Parameter, signature
+from inspect import Parameter, isfunction, signature
 from logging import Logger
-from mage_ai.data_cleaner.shared.utils import (
-    is_geo_dataframe,
-    is_spark_dataframe,
-)
+from queue import Queue
+from typing import Any, Callable, Dict, List, Set, Tuple
+
+import pandas as pd
+import simplejson
+
+from mage_ai.data_cleaner.shared.utils import is_geo_dataframe, is_spark_dataframe
+from mage_ai.data_preparation.models.block.errors import HasDownstreamDependencies
 from mage_ai.data_preparation.models.block.extension.utils import handle_run_tests
 from mage_ai.data_preparation.models.block.utils import (
     clean_name,
     fetch_input_variables,
     input_variables,
+    is_dynamic_block,
+    is_dynamic_block_child,
     is_output_variable,
     is_valid_print_variable,
     output_variables,
+    should_reduce_output,
 )
 from mage_ai.data_preparation.models.constants import (
-    BlockColor,
-    BlockLanguage,
-    BlockStatus,
-    BlockType,
-    ExecutorType,
-    PipelineType,
     BLOCK_LANGUAGE_TO_FILE_EXTENSION,
+    CALLBACK_STATUSES,
     CUSTOM_EXECUTION_BLOCK_TYPES,
     DATAFRAME_ANALYSIS_MAX_COLUMNS,
     DATAFRAME_ANALYSIS_MAX_ROWS,
     DATAFRAME_SAMPLE_COUNT_PREVIEW,
     NON_PIPELINE_EXECUTABLE_BLOCK_TYPES,
+    BlockColor,
+    BlockLanguage,
+    BlockStatus,
+    BlockType,
+    CallbackStatus,
+    ExecutorType,
+    PipelineType,
 )
 from mage_ai.data_preparation.models.file import File
 from mage_ai.data_preparation.models.variable import VariableType
@@ -35,26 +51,14 @@ from mage_ai.data_preparation.repo_manager import get_repo_path
 from mage_ai.data_preparation.shared.stream import StreamToLogger
 from mage_ai.data_preparation.templates.template import load_template
 from mage_ai.server.kernel_output_parser import DataType
-from mage_ai.shared.constants import ENV_DEV
+from mage_ai.shared.constants import ENV_DEV, ENV_TEST
+from mage_ai.shared.environments import get_env
 from mage_ai.shared.hash import merge_dict
 from mage_ai.shared.logger import BlockFunctionExec
 from mage_ai.shared.parsers import encode_complex
 from mage_ai.shared.strings import format_enum
-from mage_ai.shared.utils import (
-    clean_name as clean_name_orig,
-    is_spark_env,
-)
-from queue import Queue
-from typing import Any, Callable, Dict, List, Set, Tuple
-import asyncio
-import functools
-import json
-import os
-import pandas as pd
-import simplejson
-import sys
-import time
-import traceback
+from mage_ai.shared.utils import clean_name as clean_name_orig
+from mage_ai.shared.utils import is_spark_env
 
 PYTHON_COMMAND = 'python3'
 
@@ -242,6 +246,7 @@ class Block:
 
         self._outputs = None
         self._outputs_loaded = False
+        self.callback_blocks = []
         self.upstream_blocks = []
         self.downstream_blocks = []
         self.test_functions = []
@@ -312,6 +317,10 @@ class Block:
         return self._outputs
 
     @property
+    def callback_block_uuids(self):
+        return [b.uuid for b in self.callback_blocks]
+
+    @property
     def upstream_block_uuids(self):
         return [b.uuid for b in self.upstream_blocks]
 
@@ -328,7 +337,8 @@ class Block:
 
         return os.path.join(
             repo_path or os.getcwd(),
-            f'{block_directory}/{self.uuid}.{file_extension}',
+            block_directory,
+            f'{self.uuid}.{file_extension}',
         )
 
     @property
@@ -346,6 +356,8 @@ class Block:
         env = (self.global_vars or dict()).get('env')
         if env == ENV_DEV:
             table_name = f'dev_{table_name}'
+        elif env == ENV_TEST:
+            table_name = f'test_{table_name}'
 
         return table_name
 
@@ -371,7 +383,9 @@ class Block:
 
     @classmethod
     def after_create(self, block: 'Block', **kwargs):
-        from mage_ai.data_preparation.models.block.dbt.utils import add_blocks_upstream_from_refs
+        from mage_ai.data_preparation.models.block.dbt.utils import (
+            add_blocks_upstream_from_refs,
+        )
         widget = kwargs.get('widget')
         pipeline = kwargs.get('pipeline')
         if pipeline is not None:
@@ -397,7 +411,9 @@ class Block:
         from mage_ai.data_preparation.models.block.constants import BLOCK_TYPE_TO_CLASS
         from mage_ai.data_preparation.models.block.dbt import DBTBlock
         from mage_ai.data_preparation.models.block.integration import (
-            SourceBlock, DestinationBlock, TransformerBlock
+            DestinationBlock,
+            SourceBlock,
+            TransformerBlock,
         )
         from mage_ai.data_preparation.models.block.r import RBlock
         from mage_ai.data_preparation.models.block.sql import SQLBlock
@@ -408,7 +424,9 @@ class Block:
         elif BlockType.DBT == block_type:
             return DBTBlock
         elif pipeline and PipelineType.INTEGRATION == pipeline.type:
-            if BlockType.DATA_LOADER == block_type:
+            if BlockType.CALLBACK == block_type:
+                return CallbackBlock
+            elif BlockType.DATA_LOADER == block_type:
                 return SourceBlock
             elif BlockType.DATA_EXPORTER == block_type:
                 return DestinationBlock
@@ -459,7 +477,11 @@ class Block:
             file_extension = BLOCK_LANGUAGE_TO_FILE_EXTENSION[language]
             file_path = os.path.join(block_dir_path, f'{uuid}.{file_extension}')
             if os.path.exists(file_path):
-                if pipeline is not None and pipeline.has_block(uuid, extension_uuid=extension_uuid):
+                if pipeline is not None and pipeline.has_block(
+                    uuid,
+                    block_type=block_type,
+                    extension_uuid=extension_uuid,
+                ):
                     raise Exception(f'Block {uuid} already exists. Please use a different name.')
             else:
                 load_template(
@@ -540,7 +562,12 @@ class Block:
     def all_upstream_blocks_completed(self, completed_block_uuids: Set[str]):
         return all(b.uuid in completed_block_uuids for b in self.upstream_blocks)
 
-    def delete(self, widget: bool = False, commit: bool = True) -> None:
+    def delete(
+        self,
+        widget: bool = False,
+        commit: bool = True,
+        force: bool = False,
+    ) -> None:
         """
         1. If pipeline is not None, delete the block from the pipeline but not delete the block
         file.
@@ -550,8 +577,13 @@ class Block:
         from mage_ai.data_preparation.models.pipeline import Pipeline
 
         if self.pipeline is not None:
-            self.pipeline.delete_block(self, widget=widget, commit=commit)
-            # For block_type SCRATCHPAD, also delete the file if possible
+            self.pipeline.delete_block(
+                self,
+                widget=widget,
+                commit=commit,
+                force=force,
+            )
+            # For block_type SCRATCHPAD and MARKDOWN, also delete the file if possible
             if self.type in NON_PIPELINE_EXECUTABLE_BLOCK_TYPES:
                 pipelines = Pipeline.get_pipelines_by_block(self, widget=widget)
                 pipelines = [
@@ -562,14 +594,20 @@ class Block:
             return
         # If pipeline is not specified, delete the block from all pipelines and delete the file.
         pipelines = Pipeline.get_pipelines_by_block(self, widget=widget)
+        if not force:
+            for p in pipelines:
+                if not p.block_deletable(self):
+                    raise HasDownstreamDependencies(
+                        f'Block {self.uuid} has downstream dependencies in pipeline {p.uuid}. '
+                        'Please remove the dependencies before deleting the block.'
+                    )
         for p in pipelines:
-            if not p.block_deletable(self):
-                raise Exception(
-                    f'Block {self.uuid} has downstream dependencies in pipeline {p.uuid}. '
-                    'Please remove the dependencies before deleting the block.'
-                )
-        for p in pipelines:
-            p.delete_block(p.get_block(self.uuid, widget=widget), widget=widget, commit=commit)
+            p.delete_block(
+                p.get_block(self.uuid, widget=widget),
+                widget=widget,
+                commit=commit,
+                force=force,
+            )
         os.remove(self.file_path)
 
     def execute_with_callback(
@@ -585,6 +623,12 @@ class Block:
         websocket as a way to test the code in the callback. To run a block in a pipeline
         run, use a BlockExecutor.
         """
+        arr = []
+        if self.callback_block:
+            arr.append(self.callback_block)
+        if self.callback_blocks:
+            arr += self.callback_blocks
+
         try:
             output = self.execute_sync(
                 global_vars=global_vars,
@@ -593,8 +637,8 @@ class Block:
                 **kwargs
             )
         except Exception as e:
-            if self.callback_block:
-                self.callback_block.execute_callback(
+            for callback_block in arr:
+                callback_block.execute_callback(
                     'on_failure',
                     global_vars=global_vars,
                     logger=logger,
@@ -602,8 +646,8 @@ class Block:
                 )
             raise e
 
-        if self.callback_block:
-            self.callback_block.execute_callback(
+        for callback_block in arr:
+            callback_block.execute_callback(
                 'on_success',
                 global_vars=global_vars,
                 logger=logger,
@@ -632,6 +676,7 @@ class Block:
         dynamic_block_uuid: str = None,
         dynamic_upstream_block_uuids: List[str] = None,
         run_settings: Dict = None,
+        **kwargs,
     ) -> Dict:
         try:
             if not run_all_blocks:
@@ -662,6 +707,7 @@ class Block:
                 dynamic_block_index=dynamic_block_index,
                 dynamic_upstream_block_uuids=dynamic_upstream_block_uuids,
                 run_settings=run_settings,
+                **kwargs,
             )
             block_output = self.post_process_output(output)
             variable_mapping = dict()
@@ -709,15 +755,6 @@ class Block:
         except Exception as err:
             if update_status:
                 self.status = BlockStatus.FAILED
-            if logger is not None:
-                logger.exception(
-                    f'Failed to execute block {self.uuid}',
-                    **merge_dict(logging_tags, dict(
-                        block_type=self.type,
-                        block_uuid=self.uuid,
-                        error=err,
-                    ))
-                )
             raise err
         finally:
             if update_status:
@@ -844,6 +881,7 @@ class Block:
         dynamic_block_index: int = None,
         dynamic_upstream_block_uuids: List[str] = None,
         run_settings: Dict = None,
+        **kwargs,
     ) -> Dict:
         # Add pipeline uuid and block uuid to global_vars
         global_vars = merge_dict(
@@ -899,6 +937,7 @@ class Block:
                 runtime_arguments=runtime_arguments,
                 upstream_block_uuids=upstream_block_uuids,
                 run_settings=run_settings,
+                **kwargs,
             )
 
         output_message = dict(output=outputs)
@@ -919,6 +958,7 @@ class Block:
         runtime_arguments: Dict = None,
         upstream_block_uuids: List[str] = None,
         run_settings: Dict = None,
+        **kwargs,
     ) -> List:
         decorated_functions = []
         test_functions = []
@@ -1280,7 +1320,7 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         variable_mapping = self.__save_outputs_prepare(outputs)
         await self.store_variables_async(variable_mapping, override=override)
 
-    def to_dict_base(self):
+    def to_dict_base(self, include_callback_blocks: bool = False):
         language = self.language
         if language and type(self.language) is not str:
             language = self.language.value
@@ -1302,17 +1342,23 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
             upstream_blocks=self.upstream_block_uuids,
             uuid=self.uuid,
         )
+
+        if include_callback_blocks:
+            data['callback_blocks'] = self.callback_block_uuids
+
         return data
 
     def to_dict(
         self,
-        include_content=False,
-        include_outputs=False,
-        sample_count=None,
+        include_callback_blocks: bool = False,
+        include_content: bool = False,
+        include_outputs: bool = False,
+        sample_count: int = None,
         check_if_file_exists: bool = False,
         **kwargs,
     ):
-        data = self.to_dict_base()
+        data = self.to_dict_base(include_callback_blocks=include_callback_blocks)
+
         if include_content:
             data['content'] = self.content
             if self.callback_block is not None:
@@ -1334,12 +1380,14 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
     async def to_dict_async(
         self,
         include_block_metadata: bool = False,
+        inclide_block_tags: bool = False,
+        include_callback_blocks: bool = False,
         include_content: bool = False,
         include_outputs: bool = False,
         sample_count: int = None,
         check_if_file_exists: bool = False,
     ):
-        data = self.to_dict_base()
+        data = self.to_dict_base(include_callback_blocks=include_callback_blocks)
 
         if include_content:
             data['content'] = await self.content_async()
@@ -1361,27 +1409,40 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         if include_block_metadata:
             data['metadata'] = await self.metadata_async()
 
+        if inclide_block_tags:
+            data['tags'] = self.tags()
+
         return data
 
     def update(self, data, **kwargs):
         if 'name' in data and data['name'] != self.name:
             self.__update_name(data['name'])
+
         if (
             'type' in data
             and self.type == BlockType.SCRATCHPAD
             and data['type'] != BlockType.SCRATCHPAD
         ):
             self.__update_type(data['type'])
+
         if 'color' in data and data['color'] != self.color:
             self.color = data['color']
             self.__update_pipeline_block()
+
         if 'upstream_blocks' in data and set(data['upstream_blocks']) != set(
             self.upstream_block_uuids
         ):
             self.__update_upstream_blocks(data['upstream_blocks'])
+
+        if 'callback_blocks' in data and set(data['callback_blocks']) != set(
+            self.callback_block_uuids
+        ):
+            self.__update_callback_blocks(data['callback_blocks'])
+
         if 'executor_type' in data and data['executor_type'] != self.executor_type:
             self.executor_type = data['executor_type']
             self.__update_pipeline_block()
+
         if 'has_callback' in data and data['has_callback'] != self.has_callback:
             self.has_callback = data['has_callback']
             if self.has_callback:
@@ -1389,6 +1450,9 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
             self.__update_pipeline_block()
 
         return self
+
+    def update_callback_blocks(self, callback_blocks: List[Any]) -> None:
+        self.callback_blocks = callback_blocks
 
     def update_upstream_blocks(self, upstream_blocks: List[Any]) -> None:
         self.upstream_blocks = upstream_blocks
@@ -1682,13 +1746,17 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         return variable_mapping
 
     def __enrich_global_vars(self, global_vars: Dict = None):
+        global_vars = global_vars or dict()
         if ((self.pipeline is not None and self.pipeline.type == PipelineType.DATABRICKS) or
                 is_spark_env()):
-            global_vars = global_vars or dict()
             if not global_vars.get('spark'):
                 spark = self.__get_spark_session()
                 if spark is not None:
                     global_vars['spark'] = spark
+        if 'env' not in global_vars:
+            global_vars['env'] = get_env()
+        if 'configuration' not in global_vars:
+            global_vars['configuration'] = self.configuration
         return global_vars
 
     def __get_spark_session(self):
@@ -1876,6 +1944,26 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
             variable_objects = [v for v in variable_objects if v.variable_type == variable_type]
         return variable_objects
 
+    def tags(self) -> List[str]:
+        from mage_ai.data_preparation.models.block.constants import (
+            TAG_DYNAMIC,
+            TAG_DYNAMIC_CHILD,
+            TAG_REDUCE_OUTPUT,
+        )
+
+        arr = []
+
+        if is_dynamic_block(self):
+            arr.append(TAG_DYNAMIC)
+
+        if is_dynamic_block_child(self):
+            arr.append(TAG_DYNAMIC_CHILD)
+
+        if should_reduce_output(self):
+            arr.append(TAG_REDUCE_OUTPUT)
+
+        return arr
+
     def variable_object(
         self,
         variable_uuid: str,
@@ -1911,7 +1999,11 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         self.uuid = new_uuid
         new_file_path = self.file_path
         if self.pipeline is not None:
-            if self.pipeline.has_block(new_uuid, extension_uuid=self.extension_uuid):
+            if self.pipeline.has_block(
+                new_uuid,
+                block_type=self.type,
+                extension_uuid=self.extension_uuid,
+            ):
                 raise Exception(
                     f'Block {new_uuid} already exists in pipeline. Please use a different name.'
                 )
@@ -1919,8 +2011,8 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         if os.path.exists(new_file_path):
             raise Exception(f'Block {new_uuid} already exists. Please use a different name.')
 
-        file_path_parts = new_file_path.split('/')
-        parent_dir = '/'.join(file_path_parts[:-1])
+        file_path_parts = new_file_path.split(os.sep)
+        parent_dir = os.path.join(*file_path_parts[:-1])
         os.makedirs(parent_dir, exist_ok=True)
 
         os.rename(old_file_path, new_file_path)
@@ -1943,7 +2035,7 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         new_file_path = self.file_path
         if os.path.exists(new_file_path):
             raise Exception(
-                f'Block {self.type}/{self.uuid} already exists.'
+                f'Block {self.type}{os.sep}{self.uuid} already exists.'
                 ' Please rename it before changing the type.'
             )
         os.rename(old_file_path, new_file_path)
@@ -1964,6 +2056,16 @@ df = get_variable('{self.pipeline.uuid}', '{block_uuid}', 'df')
         self.pipeline.update_block(
             self,
             upstream_block_uuids=upstream_blocks,
+            widget=BlockType.CHART == self.type,
+        )
+
+    def __update_callback_blocks(self, block_uuids: List[str]):
+        if self.pipeline is None:
+            return
+
+        self.pipeline.update_block(
+            self,
+            callback_block_uuids=block_uuids,
             widget=BlockType.CHART == self.type,
         )
 
@@ -2012,36 +2114,68 @@ class CallbackBlock(Block):
         global_vars: Dict = None,
         logger: Logger = None,
         logging_tags: Dict = None,
+        parent_block: Block = None,
         **kwargs
     ):
         pipeline_run = kwargs.get('pipeline_run')
-        try:
-            if logger is not None:
-                stdout = StreamToLogger(logger, logging_tags=logging_tags)
-            else:
-                stdout = sys.stdout
-            with redirect_stdout(stdout):
-                global_vars = merge_dict(
-                    global_vars or dict(),
-                    dict(
-                        pipeline_uuid=self.pipeline.uuid,
-                        block_uuid=self.uuid,
-                        pipeline_run=pipeline_run,
-                    ),
-                )
-                fs = dict(on_success=[], on_failure=[])
-                globals = {
-                    k: self._block_decorator(v) for k, v in fs.items()
-                }
-                exec(self.content, globals)
 
-                callback_functions = fs[callback]
+        if logger is not None:
+            stdout = StreamToLogger(logger, logging_tags=logging_tags)
+        else:
+            stdout = sys.stdout
 
-                if callback_functions:
-                    callback = callback_functions[0]
-                    callback(**global_vars)
-        except Exception:
-            pass
+        with redirect_stdout(stdout):
+            global_vars = merge_dict(
+                global_vars or dict(),
+                dict(
+                    pipeline_uuid=self.pipeline.uuid,
+                    block_uuid=self.uuid,
+                    pipeline_run=pipeline_run,
+                ),
+            )
+
+            if parent_block and \
+                    parent_block.pipeline and \
+                    PipelineType.INTEGRATION == parent_block.pipeline.type:
+
+                template_runtime_configuration = parent_block.template_runtime_configuration
+                index = template_runtime_configuration.get('index', None)
+                is_last_block_run = template_runtime_configuration.get('is_last_block_run', False)
+                selected_streams = template_runtime_configuration.get('selected_streams', [])
+                stream = selected_streams[0] if len(selected_streams) >= 1 else None
+                destination_table = template_runtime_configuration.get('destination_table', stream)
+
+                global_vars['index'] = index
+                global_vars['is_last_block_run'] = is_last_block_run
+                global_vars['stream'] = stream
+                global_vars['destination_table'] = destination_table
+
+            callback_functions = []
+            failure_functions = []
+            success_functions = []
+
+            results = dict(
+                callback=self._block_decorator(callback_functions),
+                on_failure=super()._block_decorator(failure_functions),
+                on_success=super()._block_decorator(success_functions),
+            )
+            exec(self.content, results)
+
+            callback_functions_legacy = []
+            callback_status = None
+
+            if 'on_failure' == callback:
+                callback_functions_legacy = failure_functions
+                callback_status = CallbackStatus.FAILURE
+            elif 'on_success' == callback:
+                callback_functions_legacy = success_functions
+                callback_status = CallbackStatus.SUCCESS
+
+            for callback_function in callback_functions_legacy:
+                callback_function(**global_vars)
+
+            for callback_function in callback_functions:
+                callback_function(callback_status, **global_vars)
 
     def update_content(self, content, widget=False):
         if not self.file.exists():
@@ -2058,3 +2192,29 @@ class CallbackBlock(Block):
             self._content = content
             await self.file.update_content_async(content)
         return self
+
+    def _block_decorator(self, decorated_functions):
+        def custom_code(callback_status: CallbackStatus = CallbackStatus.SUCCESS, *args, **kwargs):
+            # If the decorator is just @callback with no arguments, default to success callback
+            if isfunction(callback_status):
+                def func(callback_status_inner, *args, **kwargs):
+                    if callback_status_inner == CallbackStatus.SUCCESS:
+                        return callback_status(*args, **kwargs)
+                decorated_functions.append(func)
+                return func
+
+            if callback_status not in CALLBACK_STATUSES:
+                raise Exception(
+                    f"Callback status '{callback_status}' in @callback decorator must be 1 of: "
+                    f"{', '.join(CALLBACK_STATUSES)}",
+                )
+
+            def inner(function):
+                def func(callback_status_inner, *args, **kwargs):
+                    if callback_status_inner == callback_status:
+                        return function(*args, **kwargs)
+                decorated_functions.append(func)
+
+            return inner
+
+        return custom_code

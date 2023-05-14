@@ -1,3 +1,6 @@
+import { useState } from 'react';
+
+import ErrorsType from '@interfaces/ErrorsType';
 import TriggerDetail from '@components/Triggers/Detail';
 import TriggerEdit from '@components/Triggers/Edit';
 import PrivateRoute from '@components/shared/PrivateRoute';
@@ -15,9 +18,13 @@ function TriggerDetailPage({
   pipelineUUID,
   subpath,
 }: TriggerDetailPageProps) {
+  const [errors, setErrors] = useState<ErrorsType>(null);
+
   const {
     data: dataGlobalVariables,
-  } = api.variables.pipelines.list(pipelineUUID);
+  } = api.variables.pipelines.list(pipelineUUID, {}, {
+    revalidateOnFocus: false,
+  });
   const globalVariables = dataGlobalVariables?.variables;
 
   const {
@@ -40,9 +47,11 @@ function TriggerDetailPage({
   if (PAGE_NAME_EDIT === subpath) {
     return (
       <TriggerEdit
+        errors={errors}
         fetchPipelineSchedule={fetchPipelineSchedule}
         pipeline={pipeline}
         pipelineSchedule={pipelineSchedule}
+        setErrors={setErrors}
         variables={globalVariables}
       />
     );
@@ -50,9 +59,11 @@ function TriggerDetailPage({
 
   return (
     <TriggerDetail
+      errors={errors}
       fetchPipelineSchedule={fetchPipelineSchedule}
       pipeline={pipeline}
       pipelineSchedule={pipelineSchedule}
+      setErrors={setErrors}
       variables={globalVariables}
     />
   );

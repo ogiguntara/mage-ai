@@ -9,7 +9,6 @@ from mage_ai.shared.utils import (
 )
 from pandas import DataFrame
 from typing import Dict, List, Mapping, Union
-import pandas as pd
 
 
 class BigQuery(BaseSQLDatabase):
@@ -56,6 +55,9 @@ class BigQuery(BaseSQLDatabase):
                 kwargs.pop('credentials')
         with self.printer.print_msg('Connecting to BigQuery warehouse'):
             self.client = Client(credentials=credentials, **kwargs)
+
+    def default_database(self) -> str:
+        return self.client.project
 
     def get_column_types(self, schema: str, table_name: str) -> Dict:
         results = self.client.query(f"""
@@ -199,9 +201,9 @@ WHERE TABLE_NAME = '{table_name}'
         """
 
         if type(df) is dict:
-            df = pd.DataFrame([df])
+            df = DataFrame([df])
         elif type(df) is list:
-            df = pd.DataFrame(df)
+            df = DataFrame(df)
 
         def __process(database: Union[str, None]):
             if query_string:
@@ -344,6 +346,10 @@ WHERE table_id = '{table_name}'
                 'No valid configuration settings found for Google BigQuery. You must specify '
                 'either your service account key or the filepath to your service account key.'
             )
+
+        if ConfigKey.GOOGLE_LOCATION in config:
+            kwargs['location'] = config[ConfigKey.GOOGLE_LOCATION]
+
         return cls(**kwargs)
 
     @classmethod

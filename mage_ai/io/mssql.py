@@ -3,7 +3,7 @@ from mage_ai.io.export_utils import PandasTypes
 from mage_ai.io.base import QUERY_ROW_LIMIT
 from mage_ai.io.sql import BaseSQL
 from pandas import DataFrame, Series
-from typing import Any, IO, Union
+from typing import Any, IO, List, Union
 import json
 import numpy as np
 import pyodbc
@@ -19,7 +19,7 @@ class MSSQL(BaseSQL):
         schema: str = None,
         port: int = 1433,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(
             database=database,
             server=host,
@@ -87,8 +87,11 @@ class MSSQL(BaseSQL):
         self,
         cursor: Any,
         df: DataFrame,
+        db_dtypes: List[str],
+        dtypes: List[str],
         full_table_name: str,
-        buffer: Union[IO, None] = None
+        buffer: Union[IO, None] = None,
+        **kwargs,
     ) -> None:
         values_placeholder = ', '.join(["?" for i in range(len(df.columns))])
         values = []

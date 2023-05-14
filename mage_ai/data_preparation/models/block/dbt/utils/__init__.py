@@ -1,4 +1,5 @@
 from contextlib import redirect_stdout
+from datetime import datetime
 from jinja2 import Template
 from logging import Logger
 from mage_ai.data_preparation.models.block import Block
@@ -19,6 +20,7 @@ from mage_ai.data_preparation.shared.utils import get_template_vars
 from mage_ai.data_preparation.variable_manager import get_global_variables
 from mage_ai.io.base import DataSource, ExportWritePolicy
 from mage_ai.io.config import ConfigFileLoader
+from mage_ai.orchestration.constants import PIPELINE_RUN_MAGE_VARIABLES_KEY
 from mage_ai.shared.array import find
 from mage_ai.shared.hash import merge_dict
 from mage_ai.shared.parsers import encode_complex
@@ -29,18 +31,24 @@ from typing import Callable, Dict, List, Tuple
 import aiofiles
 import os
 import re
+import shutil
 import simplejson
 import subprocess
 import sys
+import uuid
 import yaml
+
+
+PROFILES_FILE_NAME = 'profiles.yml'
 
 
 def parse_attributes(block) -> Dict:
     configuration = block.configuration
 
     file_path = configuration['file_path']
-    project_name = file_path.split('/')[0]
-    filename = file_path.split('/')[-1]
+    path_parts = file_path.split(os.sep)
+    project_name = path_parts[0]
+    filename = path_parts[-1]
     model_name = None
     file_extension = None
 
@@ -49,17 +57,26 @@ def parse_attributes(block) -> Dict:
         model_name = '.'.join(parts[:-1])
         file_extension = parts[-1]
 
-    project_full_path = f'{get_repo_path()}/dbt/{project_name}'
+    # Check the model SQL file content for a config with an alias value. If it exists,
+    # use that alias value as the table name instead of the model’s name.
+    table_name = model_name
+    config = model_config(block.content)
+    if config.get('alias'):
+        table_name = config['alias']
 
-    full_path = f'{get_repo_path()}/dbt/{file_path}'
+    full_path = os.path.join(get_repo_path(), 'dbt', file_path)
 
-    models_folder_path = f'{project_full_path}/models'
-    sources_full_path = f'{models_folder_path}/mage_sources.yml'
-    sources_full_path_legacy = re.sub(filename, 'mage_sources.yml', full_path)
+    project_full_path = os.path.join(get_repo_path(), 'dbt', project_name)
 
-    profiles_full_path = f'{project_full_path}/profiles.yml'
+    models_folder_path = os.path.join(project_full_path, 'models')
+    sources_full_path = os.path.join(models_folder_path, 'mage_sources.yml')
+    sources_full_path_legacy = full_path.replace(filename, 'mage_sources.yml')
+
+    profiles_full_path = os.path.join(project_full_path, PROFILES_FILE_NAME)
     profile_target = configuration.get('dbt_profile_target')
     profile = load_profile(project_name, profiles_full_path, profile_target)
+
+    dbt_project_full_path = os.path.join(project_full_path, 'dbt_project.yml')
 
     source_name = f'mage_{project_name}'
     if profile:
@@ -73,17 +90,20 @@ def parse_attributes(block) -> Dict:
             source_name = profile['schema']
 
     return dict(
+        dbt_project_full_path=dbt_project_full_path,
         file_extension=file_extension,
         file_path=file_path,
         filename=filename,
         full_path=full_path,
         model_name=model_name,
+        models_folder_path=models_folder_path,
         profiles_full_path=profiles_full_path,
         project_full_path=project_full_path,
         project_name=project_name,
         source_name=source_name,
         sources_full_path=sources_full_path,
         sources_full_path_legacy=sources_full_path_legacy,
+        table_name=table_name,
     )
 
 
@@ -111,13 +131,12 @@ def add_blocks_upstream_from_refs(
     read_only: bool = False,
 ) -> None:
     attributes_dict = parse_attributes(block)
-    project_name = attributes_dict['project_name']
-    models_folder_path = f'{get_repo_path()}/dbt/{project_name}/models'
+    models_folder_path = attributes_dict['models_folder_path']
 
     files_by_name = {}
     for file_path_orig in files_in_path(models_folder_path):
-        file_path = re.sub(f'{models_folder_path}/', '', file_path_orig)
-        filename = file_path.split('/')[-1]
+        file_path = file_path_orig.replace(f'{models_folder_path}{os.sep}', '')
+        filename = file_path.split(os.sep)[-1]
         parts = filename.split('.')
         if len(parts) >= 2:
             fn = '.'.join(parts[:-1])
@@ -132,12 +151,12 @@ def add_blocks_upstream_from_refs(
             print(f'WARNING: dbt model {ref} cannot be found.')
             continue
 
-        fp = re.sub(f'{get_repo_path()}/dbt/', '', files_by_name[ref])
+        fp = files_by_name[ref].replace(f"{os.path.join(get_repo_path(), 'dbt')}{os.sep}", '')
         configuration = dict(file_path=fp)
         uuid = remove_extension_from_filename(fp)
 
         if read_only:
-            uuid_clean = clean_name(uuid, allow_characters=['/'])
+            uuid_clean = clean_name(uuid, allow_characters=[os.sep])
             new_block = block.__class__(uuid_clean, uuid_clean, block.type)
             new_block.configuration = configuration
             new_block.language = block.language
@@ -375,6 +394,7 @@ def get_profile(block, profile_target: str = None) -> Dict:
     attr = parse_attributes(block)
     project_name = attr['project_name']
     profiles_full_path = attr['profiles_full_path']
+
     return load_profile(project_name, profiles_full_path, profile_target)
 
 
@@ -382,7 +402,9 @@ def config_file_loader_and_configuration(block, profile_target: str) -> Dict:
     profile = get_profile(block, profile_target)
 
     if not profile:
-        raise Exception(f'No profile target named {profile_target}, check the profiles.yml file.')
+        raise Exception(
+            f'No profile target named {profile_target}, check the {PROFILES_FILE_NAME} file.',
+        )
     profile_type = profile.get('type')
 
     config_file_loader = None
@@ -401,6 +423,7 @@ def config_file_loader_and_configuration(block, profile_target: str) -> Dict:
             POSTGRES_HOST=host,
             POSTGRES_PASSWORD=password,
             POSTGRES_PORT=port,
+            POSTGRES_SCHEMA=schema,
             POSTGRES_USER=user,
         ))
         configuration = dict(
@@ -470,6 +493,7 @@ def config_file_loader_and_configuration(block, profile_target: str) -> Dict:
             REDSHIFT_DBNAME=database,
             REDSHIFT_HOST=host,
             REDSHIFT_PORT=port,
+            REDSHIFT_SCHEMA=schema,
             REDSHIFT_TEMP_CRED_PASSWORD=password,
             REDSHIFT_TEMP_CRED_USER=user,
         ))
@@ -505,15 +529,16 @@ def config_file_loader_and_configuration(block, profile_target: str) -> Dict:
             export_write_policy=ExportWritePolicy.REPLACE,
         )
     elif DataSource.TRINO == profile_type:
-        catalog = profile.get('catalog')
+        catalog = profile.get('database')
         schema = profile.get('schema')
+
         config_file_loader = ConfigFileLoader(config=dict(
-            TRINO_CATALOG=profile.get('catalog'),
+            TRINO_CATALOG=catalog,
             TRINO_HOST=profile.get('host'),
-            TRINO_USER=profile.get('user'),
             TRINO_PASSWORD=profile.get('password'),
             TRINO_PORT=profile.get('port'),
-            TRINO_SCHEMA=profile.get('schema'),
+            TRINO_SCHEMA=schema,
+            TRINO_USER=profile.get('user'),
         ))
         configuration = dict(
             data_provider=profile_type,
@@ -678,25 +703,24 @@ def interpolate_input(
             continue
 
         attrs = parse_attributes(upstream_block)
-        model_name = attrs['model_name']
+        table_name = attrs['table_name']
 
         arr = []
         if profile_database:
             arr.append(__quoted(profile_database))
         if profile_schema:
             arr.append(__quoted(profile_schema))
-        if model_name:
-            arr.append(__quoted(model_name))
+        if table_name:
+            arr.append(__quoted(table_name))
         matcher1 = '.'.join(arr)
 
         database = configuration.get('data_provider_database')
         schema = configuration.get('data_provider_schema')
         table_name = upstream_block.table_name
 
-        query = re.sub(
+        query = query.replace(
             matcher1,
             __replace_func(database, schema, table_name),
-            query,
         )
 
     return query
@@ -755,7 +779,7 @@ def compiled_query_string(block: Block) -> str:
     project_full_path = attr['project_full_path']
     file_path = attr['file_path']
 
-    file = f'{project_full_path}/target/compiled/{file_path}'
+    file = os.path.join(project_full_path, 'target', 'compiled', file_path)
 
     if not os.path.exists(file):
         return None
@@ -858,14 +882,40 @@ def build_command_line_arguments(
         elif run_settings.get('test_model'):
             dbt_command = 'test'
 
+    variables_json = {}
+    for k, v in variables.items():
+        if PIPELINE_RUN_MAGE_VARIABLES_KEY == k:
+            continue
+
+        if type(v) is str or \
+                type(v) is int or \
+                type(v) is bool or \
+                type(v) is float or \
+                type(v) is dict or \
+                type(v) is list or \
+                type(v) is datetime:
+            variables_json[k] = v
+
     args = [
         '--vars',
         simplejson.dumps(
-            variables,
+            variables_json,
             default=encode_complex,
             ignore_nan=True,
         ),
     ]
+
+    runtime_configuration = variables.get(
+        PIPELINE_RUN_MAGE_VARIABLES_KEY,
+        {},
+    ).get('blocks', {}).get(block.uuid, {}).get('configuration')
+
+    if runtime_configuration:
+        if runtime_configuration.get('flags'):
+            flags = runtime_configuration['flags']
+            flags = flags if type(flags) is list else [flags]
+            # e.g. --full-refresh
+            args += flags
 
     if BlockLanguage.SQL == block.language:
         attr = parse_attributes(block)
@@ -873,17 +923,26 @@ def build_command_line_arguments(
         file_path = attr['file_path']
         project_full_path = attr['project_full_path']
         full_path = attr['full_path']
-        path_to_model = re.sub(f'{project_full_path}/', '', full_path)
+        path_to_model = full_path.replace(f'{project_full_path}{os.sep}', '')
 
         if test_execution:
             dbt_command = 'compile'
 
-            with open(f'{project_full_path}/dbt_project.yml') as f:
+            with open(os.path.join(project_full_path, 'dbt_project.yml')) as f:
                 dbt_project = yaml.safe_load(f)
                 target_path = dbt_project['target-path']
-                path = f'{project_full_path}/{target_path}/compiled/{file_path}'
+                path = os.path.join(project_full_path, target_path, 'compiled', file_path)
                 if os.path.exists(path):
                     os.remove(path)
+
+        if runtime_configuration:
+            prefix = runtime_configuration.get('prefix')
+            if prefix:
+                path_to_model = f'{prefix}{path_to_model}'
+
+            suffix = runtime_configuration.get('suffix')
+            if suffix:
+                path_to_model = f'{path_to_model}{suffix}'
 
         args += [
             '--select',
@@ -894,14 +953,16 @@ def build_command_line_arguments(
             variables=variables,
             **get_template_vars(),
         )
-        project_full_path = f'{get_repo_path()}/dbt/{project_name}'
+        project_full_path = os.path.join(get_repo_path(), 'dbt', project_name)
         args += block.content.split(' ')
+
+    profiles_dir = os.path.join(project_full_path, '.mage_temp_profiles', str(uuid.uuid4()))
 
     args += [
         '--project-dir',
         project_full_path,
         '--profiles-dir',
-        project_full_path,
+        profiles_dir,
     ]
 
     dbt_profile_target = block.configuration.get('dbt_profile_target') \
@@ -919,8 +980,22 @@ def build_command_line_arguments(
 
     return dbt_command, args, dict(
         profile_target=dbt_profile_target,
+        profiles_dir=profiles_dir,
         project_full_path=project_full_path,
     )
+
+
+def create_temporary_profile(project_full_path: str, profiles_dir: str) -> Tuple[str, str]:
+    profiles_full_path = os.path.join(project_full_path, PROFILES_FILE_NAME)
+    profile = load_profiles_file(profiles_full_path)
+
+    temp_profile_full_path = os.path.join(profiles_dir, PROFILES_FILE_NAME)
+    os.makedirs(os.path.dirname(temp_profile_full_path), exist_ok=True)
+
+    with open(temp_profile_full_path, 'w') as f:
+        yaml.safe_dump(profile, f)
+
+    return (profile, temp_profile_full_path)
 
 
 def run_dbt_tests(
@@ -937,12 +1012,24 @@ def run_dbt_tests(
     else:
         stdout = sys.stdout
 
-    dbt_command, args, _ = build_command_line_arguments(block, global_vars, run_tests=True)
+    dbt_command, args, command_line_dict = build_command_line_arguments(
+        block,
+        global_vars,
+        run_tests=True,
+    )
+
+    project_full_path = command_line_dict['project_full_path']
+    profiles_dir = command_line_dict['profiles_dir']
+
+    _, temp_profile_full_path = create_temporary_profile(
+        project_full_path,
+        profiles_dir,
+    )
 
     proc1 = subprocess.run([
         'dbt',
         dbt_command,
-    ] + args, preexec_fn=os.setsid, stdout=subprocess.PIPE)
+    ] + args, preexec_fn=os.setsid, stdout=subprocess.PIPE)  # os.setsid doesn't work on Windows
 
     number_of_errors = 0
 
@@ -955,8 +1042,47 @@ def run_dbt_tests(
             if match:
                 number_of_errors += int(match.groups()[0])
 
+    try:
+        shutil.rmtree(profiles_dir)
+    except Exception as err:
+        print(f'Error removing temporary profile at {temp_profile_full_path}: {err}')
+
     if number_of_errors >= 1:
         raise Exception('DBT test failed.')
+
+
+def get_dbt_project_settings(block: 'Block') -> Dict:
+    attributes_dict = parse_attributes(block)
+    dbt_project_full_path = attributes_dict['dbt_project_full_path']
+
+    config = {}
+    with open(dbt_project_full_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    return config
+
+
+def get_model_configurations_from_dbt_project_settings(block: 'Block') -> Dict:
+    dbt_project = get_dbt_project_settings(block)
+
+    if not dbt_project.get('models'):
+        return
+
+    attributes_dict = parse_attributes(block)
+    project_name = attributes_dict['project_name']
+    if not dbt_project['models'].get(project_name):
+        return
+
+    models_folder_path = attributes_dict['models_folder_path']
+    full_path = attributes_dict['full_path']
+    parts = full_path.replace(models_folder_path, '').split(os.sep)
+    parts = list(filter(lambda x: x, parts))
+    if len(parts) >= 2:
+        models_subfolder = parts[0]
+        if dbt_project['models'][project_name].get(models_subfolder):
+            return dbt_project['models'][project_name][models_subfolder]
+
+    return dbt_project['models'][project_name]
 
 
 def fetch_model_data(
@@ -966,6 +1092,7 @@ def fetch_model_data(
 ) -> DataFrame:
     attributes_dict = parse_attributes(block)
     model_name = attributes_dict['model_name']
+    table_name = attributes_dict['table_name']
 
     # bigquery: dataset, schema
     # postgres: schema
@@ -973,7 +1100,7 @@ def fetch_model_data(
     # snowflake: schema
     # trino: schema
     profile = get_profile(block, profile_target)
-    schema = profile.get('schema')
+    schema = profile.get('schema') or profile.get('+schema')
     if not schema and 'dataset' in profile:
         schema = profile['dataset']
 
@@ -983,7 +1110,26 @@ def fetch_model_data(
             f'no schema found in profile target {profile_target}.',
         )
 
-    query_string = f'SELECT * FROM {schema}.{model_name}'
+    # Check dbt_profiles for schema to append
+
+    # If the model SQL file contains a config with schema, change the schema to use that.
+    # https://docs.getdbt.com/reference/resource-configs/schema
+    config = model_config(block.content)
+    config_schema = config.get('schema')
+    if config_schema:
+        schema = f'{schema}_{config_schema}'
+    else:
+        # settings from the dbt_project.yml
+        model_configurations = get_model_configurations_from_dbt_project_settings(block)
+        model_configuration_schema = None
+        if model_configurations:
+            model_configuration_schema = model_configurations.get('schema') or \
+                model_configurations.get('+schema')
+
+        if model_configuration_schema:
+            schema = f"{schema}_{model_configuration_schema}"
+
+    query_string = f'SELECT * FROM {schema}.{table_name}'
 
     return execute_query(block, profile_target, query_string, limit)
 
@@ -997,8 +1143,6 @@ def upstream_blocks_from_sources(block: Block) -> List[Block]:
             mapping[source_name] = {}
         mapping[source_name][table_name] = True
 
-    print(mapping)
-
     attributes_dict = parse_attributes(block)
     source_name = attributes_dict['source_name']
 
@@ -1009,3 +1153,29 @@ def upstream_blocks_from_sources(block: Block) -> List[Block]:
             arr.append(b)
 
     return arr
+
+
+def model_config(text: str) -> Dict:
+    """
+    Extract the run time configuration for the model.
+    https://docs.getdbt.com/docs/build/custom-aliases
+    e.g. {{ config(...) }}
+    """
+    matches = re.findall(r"""{{\s+config\(([^)]+)\)\s+}}""", text)
+
+    config = {}
+    for key_values_string in matches:
+        key_values = key_values_string.strip().split(',')
+        for key_value_string in key_values:
+            parts = key_value_string.strip().split('=')
+            if len(parts) == 2:
+                key, value = parts
+                key = key.strip()
+                value = value.strip()
+                if value:
+                    if (value[0] == "'" and value[-1] == "'") \
+                            or (value[0] == '"' and value[-1] == '"'):
+                        value = value[1:-1]
+                config[key] = value
+
+    return config

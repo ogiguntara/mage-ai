@@ -98,7 +98,6 @@ function Dashboard({
         },
       },
       {
-        // gradientColor: PURPLE_BLUE,
         bold: true,
         label: () => title,
       },
@@ -164,8 +163,11 @@ function Dashboard({
 
       <ContainerStyle>
         {navigationItems?.length !== 0 && (
-          <VerticalNavigationStyle>
-            <VerticalNavigation navigationItems={navigationItems} />
+          <VerticalNavigationStyle showMore>
+            <VerticalNavigation
+              navigationItems={navigationItems}
+              showMore
+            />
           </VerticalNavigationStyle>
         )}
 

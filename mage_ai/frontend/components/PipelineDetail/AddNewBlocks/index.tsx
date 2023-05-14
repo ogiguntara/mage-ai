@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
+import BlockTemplateType from '@interfaces/BlockTemplateType';
 import ClickOutside from '@oracle/components/ClickOutside';
 import DBTLogo from '@oracle/icons/custom/DBTLogo';
 import FlexContainer from '@oracle/components/FlexContainer';
@@ -30,17 +31,19 @@ import {
   createColorMenuItems,
   getdataSourceMenuItems,
   getNonPythonMenuItems,
+  groupBlockTemplates,
 } from './utils';
 
 type AddNewBlocksProps = {
   addNewBlock: (block: BlockRequestPayloadType) => void;
   blockIdx?: number;
+  blockTemplates?: BlockTemplateType[];
   compact?: boolean;
   hideDataExporter?: boolean;
   hideDataLoader?: boolean;
   hideDbt?: boolean;
   hideCustom?: boolean;
-  hideRecommendations?: boolean;
+  hideMarkdown?: boolean;
   hideScratchpad?: boolean;
   hideSensor?: boolean;
   hideTransformer?: boolean;
@@ -49,7 +52,6 @@ type AddNewBlocksProps = {
   pipeline: PipelineType;
   setAddNewBlockMenuOpenIdx?: (cb: any) => void;
   setCreatingNewDBTModel?: (creatingNewDBTModel: boolean) => void;
-  setRecsWindowOpenBlockIdx?: (idx: number) => void;
 };
 
 const DATA_LOADER_BUTTON_INDEX = 0;
@@ -62,12 +64,13 @@ const SENSOR_BUTTON_INDEX = 6;
 function AddNewBlocks({
   addNewBlock,
   blockIdx,
+  blockTemplates,
   compact,
   hideCustom,
   hideDataExporter,
   hideDataLoader,
   hideDbt,
-  hideRecommendations,
+  hideMarkdown,
   hideScratchpad,
   hideSensor,
   hideTransformer,
@@ -76,7 +79,6 @@ function AddNewBlocks({
   pipeline,
   setAddNewBlockMenuOpenIdx,
   setCreatingNewDBTModel,
-  setRecsWindowOpenBlockIdx,
 }: AddNewBlocksProps) {
   const [buttonMenuOpenIndex, setButtonMenuOpenIndex] = useState(null);
   const dataLoaderButtonRef = useRef(null);
@@ -155,6 +157,40 @@ function AddNewBlocks({
 
   const isPySpark = PipelineTypeEnum.PYSPARK === pipelineType;
 
+  const blockTemplatesByBlockType = useMemo(() => groupBlockTemplates(
+    blockTemplates,
+    addNewBlock,
+  ), [
+    addNewBlock,
+    blockTemplates,
+  ]);
+
+  const dataLoaderItems = useMemo(() => getdataSourceMenuItems(
+    addNewBlock,
+    BlockTypeEnum.DATA_LOADER,
+    pipelineType,
+    {
+      blockTemplatesByBlockType,
+    },
+  ), [
+    addNewBlock,
+    blockTemplatesByBlockType,
+    pipelineType,
+  ]);
+
+  const dataExporterItems = useMemo(() => getdataSourceMenuItems(
+    addNewBlock,
+    BlockTypeEnum.DATA_EXPORTER,
+    pipelineType,
+    {
+      blockTemplatesByBlockType,
+    },
+  ), [
+    addNewBlock,
+    blockTemplatesByBlockType,
+    pipelineType,
+  ]);
+
   return (
     <FlexContainer flexWrap="wrap" inline>
       <ClickOutside
@@ -166,7 +202,7 @@ function AddNewBlocks({
             <ButtonWrapper increasedZIndex={buttonMenuOpenIndex === DATA_LOADER_BUTTON_INDEX}>
               <FlyoutMenuWrapper
                 disableKeyboardShortcuts
-                items={getdataSourceMenuItems(addNewBlock, BlockTypeEnum.DATA_LOADER, pipelineType)}
+                items={dataLoaderItems}
                 onClickCallback={closeButtonMenu}
                 open={buttonMenuOpenIndex === DATA_LOADER_BUTTON_INDEX}
                 parentRef={dataLoaderButtonRef}
@@ -255,7 +291,7 @@ function AddNewBlocks({
             <ButtonWrapper increasedZIndex={buttonMenuOpenIndex === DATA_EXPORTER_BUTTON_INDEX}>
               <FlyoutMenuWrapper
                 disableKeyboardShortcuts
-                items={getdataSourceMenuItems(addNewBlock, BlockTypeEnum.DATA_EXPORTER, pipelineType)}
+                items={dataExporterItems}
                 onClickCallback={closeButtonMenu}
                 open={buttonMenuOpenIndex === DATA_EXPORTER_BUTTON_INDEX}
                 parentRef={dataExporterButtonRef}
@@ -365,15 +401,6 @@ function AddNewBlocks({
                     label: () => 'SQL',
                     uuid: 'custom_block_sql',
                   },
-                  // {
-                  //   items: createColorMenuItems(
-                  //     addNewBlock,
-                  //     BlockTypeEnum.CUSTOM,
-                  //     BlockLanguageEnum.R,
-                  //   ),
-                  //   label: () => 'R',
-                  //   uuid: 'custom_block_r',
-                  // },
                 ]}
                 onClickCallback={closeButtonMenu}
                 open={buttonMenuOpenIndex ===CUSTOM_BUTTON_INDEX}
@@ -389,8 +416,11 @@ function AddNewBlocks({
                   <KeyboardShortcutButton
                     {...sharedProps}
                     beforeElement={
-                      <IconContainerStyle compact={compact}>
-                        <Edit size={iconSize} />
+                      <IconContainerStyle compact={compact} grey>
+                        <Add
+                          inverted
+                          size={iconSize}
+                        />
                       </IconContainerStyle>
                     }
                     onClick={(e) => {
@@ -474,23 +504,31 @@ function AddNewBlocks({
             </ButtonWrapper>
           )}
 
-          {/*{!hideRecommendations && (
-            <KeyboardShortcutButton
-              {...sharedProps}
-              beforeElement={
-                <IconContainerStyle compact={compact}>
-                  <Mage8Bit size={ICON_SIZE * (compact ? 0.75 : 1.25)} />
-                </IconContainerStyle>
-              }
-              onClick={(e) => {
-                e.preventDefault();
-                setRecsWindowOpenBlockIdx(blockIdx);
-              }}
-              uuid="AddNewBlocks/Recommendations"
-            >
-              Recs
-            </KeyboardShortcutButton>
-          )}*/}
+          {!hideMarkdown && (
+            <ButtonWrapper>
+              <KeyboardShortcutButton
+                {...sharedProps}
+                beforeElement={
+                  <IconContainerStyle compact={compact} sky>
+                    <Add
+                      inverted
+                      size={iconSize}
+                    />
+                  </IconContainerStyle>
+                }
+                onClick={(e) => {
+                  e.preventDefault();
+                  addNewBlock({
+                    language: BlockLanguageEnum.MARKDOWN,
+                    type: BlockTypeEnum.MARKDOWN,
+                  });
+                }}
+                uuid="AddNewBlocks/Markdown"
+              >
+                Markdown
+              </KeyboardShortcutButton>
+            </ButtonWrapper>
+          )}
         </FlexContainer>
       </ClickOutside>
     </FlexContainer>

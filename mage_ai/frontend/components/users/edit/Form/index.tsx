@@ -8,7 +8,11 @@ import Headline from '@oracle/elements/Headline';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
 import TextInput from '@oracle/elements/Inputs/TextInput';
-import UserType, { ROLES, ROLE_DISPLAY_MAPPING } from '@interfaces/UserType';
+import UserType, {
+  ROLE_DISPLAY_MAPPING,
+  ROLES,
+  RoleValueEnum,
+} from '@interfaces/UserType';
 import api from '@api';
 import usePrevious from '@utils/usePrevious';
 import {
@@ -17,6 +21,7 @@ import {
   USER_PROFILE_FIELDS,
   UserFieldType,
 } from './constants';
+import { getUser } from '@utils/session';
 import { isEmptyObject, selectKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
 
@@ -46,6 +51,16 @@ function UserEditForm({
     [key: string]: string;
   }>({});
   const [profile, setProfile] = useState<UserType>(null);
+  const {
+    id: currentUserId,
+    owner: isOwner,
+    roles: currentUserRoles,
+  } = getUser() || {};
+  const roleOptions = ROLES.filter((role: number) => (
+    (currentUserRoles === RoleValueEnum.ADMIN && currentUserId !== user?.id)
+      ? role > RoleValueEnum.ADMIN
+      : true
+  ));
 
   const [updateUser, { isLoading }] = useMutation(
     newUser ? api.users.useCreate() : api.users.useUpdate(user?.id),
@@ -73,12 +88,14 @@ function UserEditForm({
           },
           onErrorCallback: ({
             error: {
+              errors,
+              exception,
               message,
               type,
             },
           }) => {
             toast.error(
-              message,
+              errors?.error || exception || message,
               {
                 position: toast.POSITION.BOTTOM_RIGHT,
                 toastId: type,
@@ -206,21 +223,42 @@ function UserEditForm({
               // @ts-ignore
               onChange={e => {
                 setButtonDisabled(false);
-                setProfile(prev => ({
-                  ...prev,
-                  roles: e.target.value,
-                }));
+
+                if (e.target.value === RoleValueEnum.OWNER) {
+                  setProfile(prev => ({
+                    ...prev,
+                    owner: true,
+                    roles: null,
+                  }));
+                } else {
+                  const updatedProfile: UserType = {
+                    roles: e.target.value,
+                  };
+                  if (isOwner) {
+                    updatedProfile.owner = false;
+                  }
+                  setProfile(prev => ({
+                    ...prev,
+                    ...updatedProfile,
+                  }));
+                }
               }}
               primary
               setContentOnMount
-              value={profile?.roles || user?.roles || ''}
+              value={(profile?.owner ? RoleValueEnum.OWNER : profile?.roles)
+                || (user?.roles || '')}
             >
               <option value="" />
-              {ROLES.map((value) => (
+              {roleOptions.map((value) => (
                 <option key={value} value={value}>
                   {ROLE_DISPLAY_MAPPING[value]}
                 </option>
               ))}
+              {(!newUser && isOwner) &&
+                <option key="owner_role" value={RoleValueEnum.OWNER}>
+                  {ROLE_DISPLAY_MAPPING[RoleValueEnum.OWNER]}
+                </option>
+              }
             </Select>
           </Spacing>
         )}
@@ -279,7 +317,7 @@ function UserEditForm({
               {newUser ? 'Create new user' : 'Update user profile'}
             </Button>
 
-            {showDelete && (
+            {(showDelete && isOwner) && (
               <Spacing ml={1}>
                 <Button
                   danger

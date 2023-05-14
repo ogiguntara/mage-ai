@@ -3,18 +3,25 @@ import styled from 'styled-components';
 
 import dark from '@oracle/styles/themes/dark';
 import { BORDER_RADIUS_SMALL } from '@oracle/styles/units/borders';
-import { FONT_FAMILY_REGULAR } from '@oracle/styles/fonts/primary';
+import { FONT_FAMILY_REGULAR, MONO_FONT_FAMILY_REGULAR } from '@oracle/styles/fonts/primary';
 import { UNIT } from '@oracle/styles/units/spacing';
-import { REGULAR, SMALL } from '@oracle/styles/fonts/sizes';
+import {
+  REGULAR,
+  SMALL,
+  XXSMALL_FONT_SIZE,
+} from '@oracle/styles/fonts/sizes';
 
 export type BadgeProps = {
   children?: any;
   cyan?: boolean;
   disabled?: boolean;
+  inverted?: boolean;
+  monospace?: boolean;
   noVerticalPadding?: boolean;
   quantifier?: boolean;
   regular?: boolean;
   small?: boolean;
+  xxsmall?: boolean;
 };
 
 const BadgeStyle = styled.p<BadgeProps>`
@@ -26,6 +33,11 @@ const BadgeStyle = styled.p<BadgeProps>`
 
   ${props => props.small && `
     ${SMALL};
+  `}
+
+  ${props => props.xxsmall && `
+    font-size: ${XXSMALL_FONT_SIZE}px;
+    line-height: ${XXSMALL_FONT_SIZE}px;
   `}
 
   ${props => !props.regular && `
@@ -41,9 +53,14 @@ const BadgeStyle = styled.p<BadgeProps>`
     padding-top: 0;
   `}
 
-  ${props => !props.disabled && `
+  ${props => !props.disabled && !props.inverted && `
     background-color: ${(props.theme || dark).background.row};
-    color: ${(props.theme || dark).content.muted};
+    color: ${(props.theme || dark).content.default};
+  `}
+
+  ${props => !props.disabled && props.inverted && `
+    background-color: ${(props.theme || dark).background.dark};
+    color: ${(props.theme || dark).content.inverted};
   `}
 
   ${props => props.cyan && `
@@ -60,6 +77,11 @@ const BadgeStyle = styled.p<BadgeProps>`
     border-radius: 34px;
     line-height: 10px;
     padding: 4px 6px;
+  `}
+
+  ${props => props.monospace && `
+    font-family: ${MONO_FONT_FAMILY_REGULAR};
+    word-break: break-all;
   `}
 `;
 

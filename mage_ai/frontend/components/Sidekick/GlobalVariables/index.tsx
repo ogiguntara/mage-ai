@@ -10,7 +10,10 @@ import Headline from '@oracle/elements/Headline';
 import KeyboardShortcutButton from '@oracle/elements/Button/KeyboardShortcutButton';
 import Link from '@oracle/elements/Link';
 import PipelineType from '@interfaces/PipelineType';
-import PipelineVariableType, { VariableType } from '@interfaces/PipelineVariableType';
+import PipelineVariableType, {
+  GLOBAL_VARIABLES_UUID,
+  VariableType,
+} from '@interfaces/PipelineVariableType';
 import Row from '@components/shared/Grid/Row';
 import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
@@ -133,7 +136,7 @@ function GlobalVariables({
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter') {
-      let updatedValue = newVariableValue
+      let updatedValue = newVariableValue;
       try {
         updatedValue = JSON.parse(newVariableValue);
       } catch {
@@ -164,7 +167,7 @@ function GlobalVariables({
 
   const tableWidth = useMemo(() => width - 4 * UNIT, [width]);
   const globalVariables = useMemo(
-    () => getFormattedVariables(variables, (block) => block.uuid === 'global'),
+    () => getFormattedVariables(variables, (block) => block.uuid === GLOBAL_VARIABLES_UUID),
     [variables],
   );
 
@@ -245,6 +248,7 @@ function GlobalVariables({
         <VariableRow
           deleteVariable={() => deleteVariable(variable.uuid)}
           fetchVariables={fetchVariables}
+          key={variable.uuid}
           pipelineUUID={pipelineUUID}
           variable={variable}
         />
@@ -277,6 +281,7 @@ ${BUILD_CODE_SNIPPET_PREVIEW(pipelineUUID, selectedBlock?.uuid, uuid)}`;
           <VariableRow
             copyText={copyText(variable.uuid)}
             hideEdit
+            key={variable.uuid}
             pipelineUUID={pipelineUUID}
             variable={variable}
           />
@@ -398,18 +403,22 @@ ${BUILD_CODE_SNIPPET_PREVIEW(pipelineUUID, selectedBlock?.uuid, uuid)}`;
         </Text>
       </Spacing>
 
-      {Object.values(ScheduleTypeEnum).map((value) => (
-        <Spacing mb={PADDING_UNITS}>
+      {Object.values(ScheduleTypeEnum).map((value, idx) => (
+        <Spacing
+          key={`${value}_${idx}`}
+          mb={PADDING_UNITS}
+        >
           <Spacing mb={PADDING_UNITS}>
             <Text large monospace>
               {capitalizeRemoveUnderscoreLower(SCHEDULE_TYPE_TO_LABEL[value]?.())}
             </Text>
           </Spacing>
-          {addTriggerVariables([], value).map((variable) => (
+          {addTriggerVariables([], value).map((variable, idx) => (
             <VariableRow
               hideEdit
-              variable={variable}
+              key={`var_${value}_${idx}`}
               pipelineUUID={pipelineUUID}
+              variable={variable}
             />
           ))}
         </Spacing>
@@ -433,15 +442,18 @@ ${BUILD_CODE_SNIPPET_PREVIEW(pipelineUUID, selectedBlock?.uuid, uuid)}`;
                 bold
                 inline
                 monospace
+                warning
               >
                 {BlockTypeEnum.SCRATCHPAD}
-              </Text> block.
+              </Text> block. They are for scratchpad blocks, specifically.
+              To get upstream block outputs inside of other blocks, use
+              the positional arguments.
             </Text>
           </Spacing>
 
           <Spacing mb={PADDING_UNITS}>
             <Text>
-              To load the variable, use the following syntax:
+              To load the variable in a scratchpad block, use the following syntax:
             </Text>
           </Spacing>
 

@@ -1,3 +1,13 @@
+import importlib
+import json
+import os
+import subprocess
+from typing import Any, Dict, List
+
+import pandas as pd
+import simplejson
+import yaml
+
 from mage_ai.data_integrations.logger.utils import print_logs_from_output
 from mage_ai.data_integrations.utils.config import (
     build_config_json,
@@ -12,16 +22,8 @@ from mage_ai.data_preparation.models.pipelines.utils import number_string
 from mage_ai.data_preparation.variable_manager import get_global_variables
 from mage_ai.shared.array import find
 from mage_ai.shared.hash import dig
-from mage_ai.shared.utils import clean_name
 from mage_ai.shared.parsers import encode_complex, extract_json_objects
-from typing import Any, Dict, List
-import importlib
-import json
-import os
-import pandas as pd
-import simplejson
-import subprocess
-import yaml
+from mage_ai.shared.utils import clean_name
 
 PYTHON = 'python3'
 
@@ -121,6 +123,12 @@ class IntegrationPipeline(Pipeline):
     def transformer_file_path(self) -> str:
         transformer_file = importlib.import_module('mage_integrations.transformers.base')
         return os.path.abspath(transformer_file.__file__)
+
+    def block_from_block_uuid_with_stream(
+        self,
+        block_uuid_with_stream: str,
+    ) -> Block:
+        return find(lambda x: block_uuid_with_stream.startswith(x.uuid), self.blocks)
 
     def destination_state_file_path(self, stream: str, destination_table: str) -> str:
         stream_dir = f'{self.destination_dir}/{clean_name(stream)}'
@@ -271,6 +279,10 @@ class IntegrationPipeline(Pipeline):
                     json_object = next(extract_json_objects(line))
 
             error = dig(json_object, 'tags.error')
+            if not error:
+                raise Exception('The sample data was not able to be loaded. Please check \
+                                if the stream still exists. If it does not, click the "View and \
+                                select streams" button and confirm the valid streams.')
             raise Exception(error)
 
     def count_records(self) -> List[Dict]:

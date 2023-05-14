@@ -14,7 +14,7 @@ BlockPolicy.allow_actions([
     constants.UPDATE,
 ], scopes=[
     OauthScope.CLIENT_PRIVATE,
-], condition=lambda policy: policy.has_at_least_editor_role_and_edit_access())
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())
 
 BlockPolicy.allow_actions([
     constants.DETAIL,
@@ -29,13 +29,13 @@ BlockPolicy.allow_read([
 ], on_action=[
     constants.CREATE,
     constants.UPDATE,
-], condition=lambda policy: policy.has_at_least_editor_role_and_edit_access())
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())
 
 BlockPolicy.allow_read(BlockPresenter.default_attributes + [], scopes=[
     OauthScope.CLIENT_PRIVATE,
 ], on_action=[
     constants.DELETE,
-], condition=lambda policy: policy.has_at_least_editor_role_and_edit_access())
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())
 
 BlockPolicy.allow_read([
     'bookmarks',
@@ -66,11 +66,12 @@ BlockPolicy.allow_write([
     OauthScope.CLIENT_PRIVATE,
 ], on_action=[
     constants.CREATE,
-], condition=lambda policy: policy.has_at_least_editor_role_and_edit_access())
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())
 
 BlockPolicy.allow_write([
     'all_upstream_blocks_executed',
     'bookmark_values',
+    'callback_blocks',
     'color',
     'configuration',
     'content',
@@ -85,6 +86,7 @@ BlockPolicy.allow_write([
     'name',
     'outputs',
     'status',
+    'tags',
     'tap_stream_id',
     'type',
     'upstream_blocks',
@@ -93,7 +95,7 @@ BlockPolicy.allow_write([
     OauthScope.CLIENT_PRIVATE,
 ], on_action=[
     constants.UPDATE,
-], condition=lambda policy: policy.has_at_least_editor_role_and_edit_access())
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())
 
 BlockPolicy.allow_query([
     'destination_table',
@@ -112,3 +114,13 @@ BlockPolicy.allow_query([
     constants.DELETE,
     constants.UPDATE,
 ], condition=lambda policy: policy.has_at_least_viewer_role())
+
+BlockPolicy.allow_query([
+    'block_type',
+    'extension_uuid',
+    'update_state',
+], scopes=[
+    OauthScope.CLIENT_PRIVATE,
+], on_action=[
+    constants.UPDATE,
+], condition=lambda policy: policy.has_at_least_editor_role_and_pipeline_edit_access())

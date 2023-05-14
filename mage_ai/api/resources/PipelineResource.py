@@ -1,14 +1,19 @@
+from mage_ai.api.operations.constants import DELETE
 from mage_ai.api.resources.BaseResource import BaseResource
 from mage_ai.data_preparation.models.block.dbt.utils import add_blocks_upstream_from_refs
 from mage_ai.data_preparation.models.constants import PipelineStatus
 from mage_ai.data_preparation.models.pipeline import Pipeline
+from mage_ai.data_preparation.models.triggers import (
+    ScheduleStatus,
+)
 from mage_ai.data_preparation.repo_manager import get_repo_path
 from mage_ai.orchestration.db import safe_db_query
 from mage_ai.orchestration.db.models.schedules import PipelineSchedule, PipelineRun
-from mage_ai.orchestration.pipeline_scheduler import PipelineScheduler
+from mage_ai.orchestration.pipeline_scheduler import PipelineScheduler, retry_pipeline_run
 from mage_ai.server.active_kernel import switch_active_kernel
 from mage_ai.server.kernels import PIPELINE_TO_KERNEL_NAME
 from mage_ai.shared.hash import group_by, ignore_keys
+from mage_ai.usage_statistics.logger import UsageStatisticLogger
 from sqlalchemy.orm import aliased
 import asyncio
 
@@ -34,6 +39,8 @@ class PipelineResource(BaseResource):
             pipeline_statuses = pipeline_statuses.split(',')
 
         pipeline_uuids = Pipeline.get_all_pipelines(get_repo_path())
+
+        await UsageStatisticLogger().pipelines_impression(lambda: len(pipeline_uuids))
 
         async def get_pipeline(uuid):
             try:
@@ -82,11 +89,11 @@ class PipelineResource(BaseResource):
 
             if pipeline_statuses and (
                 (PipelineStatus.ACTIVE in pipeline_statuses and
-                    any(s.status == PipelineSchedule.ScheduleStatus.ACTIVE
+                    any(s.status == ScheduleStatus.ACTIVE
                         for s in pipeline.schedules)) or
                 (PipelineStatus.INACTIVE in pipeline_statuses and
                     len(pipeline.schedules) > 0 and
-                    all(s.status == PipelineSchedule.ScheduleStatus.INACTIVE
+                    all(s.status == ScheduleStatus.INACTIVE
                         for s in pipeline.schedules)) or
                 (PipelineStatus.NO_SCHEDULES in pipeline_statuses and
                     len(pipeline.schedules) == 0)
@@ -131,7 +138,8 @@ class PipelineResource(BaseResource):
     async def member(self, pk, user, **kwargs):
         pipeline = await Pipeline.get_async(pk)
 
-        switch_active_kernel(PIPELINE_TO_KERNEL_NAME[pipeline.type])
+        if kwargs.get('api_operation_action', None) != DELETE:
+            switch_active_kernel(PIPELINE_TO_KERNEL_NAME[pipeline.type])
 
         return self(pipeline, user, **kwargs)
 
@@ -194,19 +202,24 @@ class PipelineResource(BaseResource):
             for pipeline_run in pipeline_runs:
                 PipelineScheduler(pipeline_run).stop()
 
-        status = payload.get('status')
+        def retry_pipeline_runs(pipeline_runs):
+            for run in pipeline_runs:
+                retry_pipeline_run(run)
 
+        status = payload.get('status')
         pipeline_uuid = self.model.uuid
 
         def _update_callback(resource):
             if status:
                 if status in [
-                    PipelineSchedule.ScheduleStatus.ACTIVE.value,
-                    PipelineSchedule.ScheduleStatus.INACTIVE.value,
+                    ScheduleStatus.ACTIVE.value,
+                    ScheduleStatus.INACTIVE.value,
                 ]:
                     update_schedule_status(status, pipeline_uuid)
                 elif status == PipelineRun.PipelineRunStatus.CANCELLED.value:
                     cancel_pipeline_runs(status, pipeline_uuid)
+                elif status == 'retry' and payload.get('pipeline_runs'):
+                    retry_pipeline_runs(payload.get('pipeline_runs'))
 
         self.on_update_callback = _update_callback
 

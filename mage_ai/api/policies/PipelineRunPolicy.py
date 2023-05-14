@@ -50,6 +50,7 @@ PipelineRunPolicy.allow_read(PipelineRunPresenter.default_attributes + [], scope
 ], condition=lambda policy: policy.has_at_least_viewer_role())
 
 PipelineRunPolicy.allow_write([
+    'backfill_id',
     'execution_date',
     'pipeline_schedule_id',
     'pipeline_uuid',
@@ -61,6 +62,7 @@ PipelineRunPolicy.allow_write([
 ], condition=lambda policy: policy.has_at_least_editor_role())
 
 PipelineRunPolicy.allow_write([
+    'from_block_uuid',
     'pipeline_run_action',
     'status',
 ], scopes=[

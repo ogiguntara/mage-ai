@@ -21,6 +21,7 @@ from mage_ai.server.active_kernel import (
     switch_active_kernel,
 )
 from mage_ai.shared.constants import ENV_DEV
+from mage_ai.server.logger import Logger
 from mage_ai.server.execution_manager import (
     cancel_pipeline_execution,
     check_pipeline_process_status,
@@ -39,6 +40,7 @@ from mage_ai.server.utils.output_display import (
     get_pipeline_execution_code,
 )
 from mage_ai.settings import (
+    is_disable_pipeline_edit_access,
     DISABLE_NOTEBOOK_EDIT_ACCESS,
     HIDE_ENV_VAR_VALUES,
     REQUIRE_USER_AUTHENTICATION,
@@ -56,6 +58,8 @@ import re
 import tornado.websocket
 import traceback
 import uuid
+
+logger = Logger().new_server_logger(__name__)
 
 
 def run_pipeline(
@@ -171,7 +175,7 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
         token = message.get('token')
 
         if REQUIRE_USER_AUTHENTICATION or DISABLE_NOTEBOOK_EDIT_ACCESS:
-            valid = False
+            valid = not REQUIRE_USER_AUTHENTICATION
 
             if api_key and token:
                 oauth_client = Oauth2Application.query.filter(
@@ -183,8 +187,7 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
                         oauth_token and \
                         oauth_token.user and \
                         has_at_least_editor_role(oauth_token.user)
-
-            if not valid or DISABLE_NOTEBOOK_EDIT_ACCESS:
+            if not valid or DISABLE_NOTEBOOK_EDIT_ACCESS == 1:
                 return self.send_message(
                     dict(
                         data=ApiError.UNAUTHORIZED_ACCESS['message'],
@@ -314,13 +317,17 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
             output_dict,
         )
 
-        print(
-            f'[{block_uuid}] Sending message for {msg_id} to '
-            f'{len(self.clients)} client(s):\n{json.dumps(message_final, indent=2)}'
-        )
+        # KernelResource: when getting a kernel,
+        # it will trigger this send_message from the WebSocket subscriber.
+        # This log message is unnecessary and publishing to clients is also unnecessary.
+        if block_uuid or pipeline_uuid:
+            logger.info(
+                f'[{block_uuid}] Sending message for {msg_id} to '
+                f'{len(self.clients)} client(s):\n{json.dumps(message_final, indent=2)}'
+            )
 
-        for client in self.clients:
-            client.write_message(json.dumps(message_final))
+            for client in self.clients:
+                client.write_message(json.dumps(message_final))
 
     def __execute_block(
         self,
@@ -343,7 +350,16 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
 
         widget = BlockType.CHART == block_type
 
-        block = pipeline.get_block(block_uuid, extension_uuid=extension_uuid, widget=widget)
+        block = pipeline.get_block(
+            block_uuid,
+            block_type=block_type,
+            extension_uuid=extension_uuid,
+            widget=widget,
+        )
+
+        # Execute saved block content when pipeline edits are disabled
+        if is_disable_pipeline_edit_access():
+            custom_code = block.content
 
         reload_all_repo_modules(custom_code)
 
@@ -377,7 +393,6 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
                     block_uuid,
                     custom_code,
                     global_vars,
-                    analyze_outputs=False,
                     block_type=block_type,
                     extension_uuid=extension_uuid,
                     kernel_name=kernel_name,
@@ -405,10 +420,16 @@ class WebSocketServer(tornado.websocket.WebSocketHandler):
                 client.execute(block_output_process_code)
 
             if run_downstream:
+                # This will only run downstream blocks that are charts/widgets
                 for block in block.downstream_blocks:
+                    if BlockType.CHART != block.type:
+                        continue
+
                     self.on_message(json.dumps(dict(
+                        api_key=message.get('api_key'),
                         code=block.file.content(),
                         pipeline_uuid=pipeline_uuid,
+                        token=message.get('token'),
                         type=block.type,
                         uuid=block.uuid,
                     )))

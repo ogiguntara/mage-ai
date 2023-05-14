@@ -11,11 +11,13 @@ import { ThemeProvider } from 'styled-components';
 
 import 'react-toastify/dist/ReactToastify.min.css';
 import '@styles/globals.css';
+import AuthToken from '@api/utils/AuthToken';
 import Head from '@oracle/elements/Head';
 import KeyboardContext from '@context/Keyboard';
 import ToastWrapper from '@components/Toast/ToastWrapper';
 import api from '@api';
 import useGlobalKeyboardShortcuts from '@utils/hooks/keyboardShortcuts/useGlobalKeyboardShortcuts';
+import { ErrorProvider } from '@context/Error';
 import { ModalProvider } from '@context/Modal';
 import { RED } from '@oracle/styles/colors/main';
 import {
@@ -30,6 +32,7 @@ import {
   gridTheme as gridThemeDefault,
   theme as stylesTheme,
 } from '@styles/theme';
+import { queryFromUrl, queryString, redirectToUrl } from '@utils/url';
 
 type AppInternalProps = {
   defaultTitle?: string;
@@ -120,8 +123,10 @@ function MyApp(props: MyAppProps & AppProps) {
   );
   const noValue = typeof val === 'undefined' || val === null || !REQUIRE_USER_AUTHENTICATION();
   const { data } = api.project_settings.list({}, {}, { pauseFetch: !noValue });
+  const { data: dataProjects } = api.projects.list({}, { revalidateOnFocus: false });
   const requireUserAuthentication =
     useMemo(() => data?.project_settings?.[0]?.require_user_authentication, [data]);
+
   useEffect(() => {
     if (noValue &&
       typeof requireUserAuthentication !== 'undefined' &&
@@ -133,7 +138,23 @@ function MyApp(props: MyAppProps & AppProps) {
         REQUIRE_USER_AUTHENTICATION_COOKIE_PROPERTIES,
       );
     }
-  }, [noValue, requireUserAuthentication]);
+
+    const loggedIn = AuthToken.isLoggedIn();
+    if ((requireUserAuthentication && !loggedIn) || dataProjects?.error?.code === 401) {
+      const currentPath = typeof window !== 'undefined' ? window.location.pathname : null;
+      if ('/sign-in' !== currentPath) {
+        const query = {
+          ...queryFromUrl(),
+          redirect_url: currentPath,
+        };
+        redirectToUrl(`/sign-in?${queryString(query)}`);
+      }
+    }
+  }, [
+    dataProjects,
+    noValue,
+    requireUserAuthentication,
+  ]);
 
   return (
     <KeyboardContext.Provider value={keyboardContextValue}>
@@ -146,20 +167,22 @@ function MyApp(props: MyAppProps & AppProps) {
         <GridThemeProvider gridTheme={gridThemeDefault}>
           <ModalProvider>
             <SheetProvider>
-              <Head
-                defaultTitle={defaultTitle}
-                title={title}
-              >
-                <meta
-                  content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=0"
-                  name="viewport"
-                />
-              </Head>
+              <ErrorProvider>
+                <Head
+                  defaultTitle={defaultTitle}
+                  title={title}
+                >
+                  <meta
+                    content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=0"
+                    name="viewport"
+                  />
+                </Head>
 
-              <LoadingBar color={RED} ref={refLoadingBar} />
+                <LoadingBar color={RED} ref={refLoadingBar} />
 
-              {/* @ts-ignore */}
-              <Component {...pageProps} />
+                {/* @ts-ignore */}
+                <Component {...pageProps} />
+              </ErrorProvider>
             </SheetProvider>
           </ModalProvider>
         </GridThemeProvider>

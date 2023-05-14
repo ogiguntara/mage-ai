@@ -1,6 +1,9 @@
+from datetime import datetime
 from mage_ai.data_preparation.models.block import Block
 from mage_ai.data_preparation.models.block.sql import (
     bigquery,
+    clickhouse,
+    druid,
     mssql,
     mysql,
     postgres,
@@ -14,7 +17,11 @@ from mage_ai.data_preparation.models.block.sql.utils.shared import (
 )
 from mage_ai.data_preparation.models.constants import BlockType
 from mage_ai.data_preparation.repo_manager import get_repo_path
-from mage_ai.io.base import DataSource, ExportWritePolicy
+from mage_ai.io.base import (
+    DataSource,
+    ExportWritePolicy,
+    QUERY_ROW_LIMIT,
+)
 from mage_ai.io.config import ConfigFileLoader
 from os import path
 from time import sleep
@@ -37,6 +44,7 @@ def execute_sql_code(
     global_vars: Dict = None,
     config_file_loader: Any = None,
     configuration: Dict = None,
+    test_execution: bool = False,
 ) -> List[Any]:
     configuration = configuration if configuration else block.configuration
     use_raw_sql = configuration.get('use_raw_sql')
@@ -66,18 +74,27 @@ def execute_sql_code(
         verbose=BlockType.DATA_EXPORTER == block.type,
     )
 
+    limit = int(configuration.get('limit') or QUERY_ROW_LIMIT)
+    if test_execution:
+        limit = min(limit, QUERY_ROW_LIMIT)
+    else:
+        limit = QUERY_ROW_LIMIT
+
     if DataSource.BIGQUERY.value == data_provider:
         from mage_ai.io.bigquery import BigQuery
 
         loader = BigQuery.with_config(config_file_loader)
+        database = database or loader.default_database()
+
         bigquery.create_upstream_block_tables(
             loader,
             block,
             configuration=configuration,
             execution_partition=execution_partition,
+            query=query,
         )
 
-        query_string = bigquery.interpolate_input_data(block, query)
+        query_string = bigquery.interpolate_input_data(block, query, loader)
         query_string = interpolate_vars(query_string, global_vars=global_vars)
 
         if use_raw_sql:
@@ -111,12 +128,96 @@ def execute_sql_code(
                     try:
                         result = loader.load(
                             f'SELECT * FROM {database}.{schema}.{table_name}',
+                            limit=limit,
                             verbose=False,
                         )
                         return [result]
                     except Exception as err:
                         if '404' not in str(err):
                             raise err
+    elif DataSource.CLICKHOUSE.value == data_provider:
+        from mage_ai.io.clickhouse import ClickHouse
+
+        loader = ClickHouse.with_config(config_file_loader)
+        clickhouse.create_upstream_block_tables(
+            loader,
+            block,
+            configuration=configuration,
+            execution_partition=execution_partition,
+            query=query,
+        )
+
+        query_string = clickhouse.interpolate_input_data(block, query)
+        query_string = interpolate_vars(
+            query_string, global_vars=global_vars)
+
+        database = database or 'default'
+
+        if use_raw_sql:
+            return execute_raw_sql(
+                loader,
+                block,
+                query_string,
+                configuration=configuration,
+                should_query=should_query,
+            )
+        else:
+            loader.export(
+                None,
+                table_name=table_name,
+                database=database,
+                query_string=query_string,
+                **kwargs_shared,
+            )
+
+            if should_query:
+                return [
+                    loader.load(
+                        f'SELECT * FROM {database}.{table_name}',
+                        verbose=False,
+                    ),
+                ]
+
+    elif DataSource.DRUID.value == data_provider:
+        from mage_ai.io.druid import Druid
+
+        with Druid.with_config(config_file_loader) as loader:
+            druid.create_upstream_block_tables(
+                loader,
+                block,
+                configuration=configuration,
+                execution_partition=execution_partition,
+                query=query,
+            )
+
+            query_string = druid.interpolate_input_data(block, query)
+            query_string = interpolate_vars(query_string, global_vars=global_vars)
+
+            if use_raw_sql:
+                return execute_raw_sql(
+                    loader,
+                    block,
+                    query_string,
+                    configuration=configuration,
+                    should_query=should_query,
+                )
+            else:
+                loader.export(
+                    None,
+                    None,
+                    table_name,
+                    query_string=query_string,
+                    **kwargs_shared,
+                )
+
+                if should_query:
+                    return [
+                        loader.load(
+                            f'SELECT * FROM {table_name}',
+                            limit=limit,
+                            verbose=False,
+                        ),
+                    ]
     elif DataSource.MSSQL.value == data_provider:
         from mage_ai.io.mssql import MSSQL
 
@@ -126,6 +227,7 @@ def execute_sql_code(
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
             )
 
             query_string = mssql.interpolate_input_data(block, query)
@@ -155,6 +257,7 @@ def execute_sql_code(
                     return [
                         loader.load(
                             f'SELECT * FROM {table_name}',
+                            limit=limit,
                             verbose=False,
                         ),
                     ]
@@ -167,6 +270,7 @@ def execute_sql_code(
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
             )
 
             query_string = mysql.interpolate_input_data(block, query)
@@ -193,6 +297,7 @@ def execute_sql_code(
                     return [
                         loader.load(
                             f'SELECT * FROM {table_name}',
+                            limit=limit,
                             verbose=False,
                         ),
                     ]
@@ -205,10 +310,13 @@ def execute_sql_code(
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
             )
 
-            query_string = postgres.interpolate_input_data(block, query)
+            query_string = postgres.interpolate_input_data(block, query, loader)
             query_string = interpolate_vars(query_string, global_vars=global_vars)
+
+            schema = schema or loader.default_schema()
 
             if use_raw_sql:
                 return execute_raw_sql(
@@ -231,6 +339,7 @@ def execute_sql_code(
                     return [
                         loader.load(
                             f'SELECT * FROM {schema}.{table_name}',
+                            limit=limit,
                             verbose=False,
                         ),
                     ]
@@ -243,9 +352,13 @@ def execute_sql_code(
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
             )
 
-            query_string = redshift.interpolate_input_data(block, query)
+            database = database or loader.default_database()
+            schema = schema or loader.default_schema()
+
+            query_string = redshift.interpolate_input_data(block, query, loader)
             query_string = interpolate_vars(query_string, global_vars=global_vars)
 
             if use_raw_sql:
@@ -269,6 +382,7 @@ def execute_sql_code(
                     return [
                             loader.load(
                                 f'SELECT * FROM {schema}.{table_name}',
+                                limit=limit,
                                 verbose=False,
                             ),
                         ]
@@ -276,18 +390,23 @@ def execute_sql_code(
         from mage_ai.io.snowflake import Snowflake
 
         table_name = table_name.upper() if table_name else table_name
-        database = database.upper() if database else database
-        schema = schema.upper() if schema else schema
 
         with Snowflake.with_config(config_file_loader, database=database, schema=schema) as loader:
+            database = database or loader.default_database()
+            database = database.upper() if database else database
+
+            schema = schema or loader.default_schema()
+            schema = schema.upper() if schema else schema
+
             snowflake.create_upstream_block_tables(
                 loader,
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
             )
 
-            query_string = snowflake.interpolate_input_data(block, query)
+            query_string = snowflake.interpolate_input_data(block, query, loader)
             query_string = interpolate_vars(query_string, global_vars=global_vars)
 
             if use_raw_sql:
@@ -316,21 +435,36 @@ def execute_sql_code(
                             database=database,
                             schema=schema,
                             table_name=table_name,
+                            limit=limit,
                             verbose=False,
                         ),
                     ]
     elif DataSource.TRINO.value == data_provider:
         from mage_ai.io.trino import Trino
 
+        unique_table_name_suffix = None
+        if (configuration or block.configuration).get('unique_upstream_table_name', False):
+            unique_table_name_suffix = str(int(datetime.utcnow().timestamp()))
+
         with Trino.with_config(config_file_loader) as loader:
+            database = database or loader.default_database()
+            schema = schema or loader.default_schema()
+
             trino.create_upstream_block_tables(
                 loader,
                 block,
                 configuration=configuration,
                 execution_partition=execution_partition,
+                query=query,
+                unique_table_name_suffix=unique_table_name_suffix,
             )
 
-            query_string = trino.interpolate_input_data(block, query)
+            query_string = trino.interpolate_input_data(
+                block,
+                query,
+                loader,
+                unique_table_name_suffix=unique_table_name_suffix,
+            )
             query_string = interpolate_vars(query_string, global_vars=global_vars)
 
             if use_raw_sql:
@@ -344,21 +478,26 @@ def execute_sql_code(
             else:
                 loader.export(
                     None,
-                    table_name,
-                    database,
                     schema,
+                    table_name,
+                    drop_table_on_replace=True,
                     if_exists=export_write_policy,
                     query_string=query_string,
                     verbose=BlockType.DATA_EXPORTER == block.type,
                 )
 
                 if should_query:
+                    names = list(filter(lambda x: x, [
+                        database,
+                        schema,
+                        table_name,
+                    ]))
+                    full_table_name = '.'.join([f'"{n}"' for n in names])
+
                     return [
                         loader.load(
-                            f'SELECT * FROM "{database}"."{schema}"."{table_name}"',
-                            database=database,
-                            schema=schema,
-                            table_name=table_name,
+                            f'SELECT * FROM {full_table_name}',
+                            limit=limit,
                             verbose=False,
                         ),
                     ]
@@ -449,9 +588,11 @@ class SQLBlock(Block):
         global_vars=None,
         **kwargs,
     ) -> List:
+        test_execution = kwargs.get('test_execution')
         return execute_sql_code(
             self,
             custom_code or self.content,
             execution_partition=execution_partition,
             global_vars=global_vars,
+            test_execution=test_execution,
         )

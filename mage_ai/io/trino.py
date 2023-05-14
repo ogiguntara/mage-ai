@@ -12,11 +12,12 @@ from mage_ai.shared.utils import (
     convert_python_type_to_trino_type,
 )
 from pandas import DataFrame, Series
+from time import sleep
 from trino.auth import BasicAuthentication
 from trino.dbapi import Connection, Cursor as CursorParent
+from trino.exceptions import TrinoUserError
 from trino.transaction import IsolationLevel
-from typing import IO, Mapping, Union
-import pandas as pd
+from typing import IO, List, Mapping, Union
 
 
 class Cursor(CursorParent):
@@ -59,7 +60,7 @@ class Trino(BaseSQL):
         schema: str = None,
         verbose: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(
             verbose=verbose,
             catalog=catalog,
@@ -73,6 +74,23 @@ class Trino(BaseSQL):
 
     @classmethod
     def with_config(cls, config: BaseConfigLoader) -> 'Trino':
+        if config.get('trino'):
+            settings = config['trino']
+
+            return cls(
+                catalog=settings.get('catalog'),
+                host=settings.get('host'),
+                http_headers=settings.get('http_headers'),
+                http_scheme=settings.get('http_scheme'),
+                password=settings.get('password'),
+                port=settings.get('port'),
+                schema=settings.get('schema'),
+                session_properties=settings.get('session_properties'),
+                source=settings.get('source'),
+                user=settings.get('user'),
+                verify=settings.get('verify'),
+            )
+
         return cls(
             catalog=config[ConfigKey.TRINO_CATALOG],
             host=config[ConfigKey.TRINO_HOST],
@@ -82,38 +100,103 @@ class Trino(BaseSQL):
             schema=config[ConfigKey.TRINO_SCHEMA],
         )
 
+    def default_database(self) -> str:
+        return self.settings.get('catalog')
+
+    def default_schema(self) -> str:
+        return self.settings.get('schema')
+
     def build_create_table_command(
         self,
         dtypes: Mapping[str, str],
         schema_name: str,
-        table_name: str
+        table_name: str,
+        unique_constraints: List[str] = [],
     ):
         query = []
         for cname in dtypes:
             query.append(f'"{clean_name(cname)}" {dtypes[cname]}')
 
-        return f'CREATE TABLE {table_name} (' + ','.join(query) + ')'
+        full_table_name = '.'.join(list(filter(lambda x: x, [
+            schema_name,
+            table_name,
+        ])))
+
+        return f'CREATE TABLE {full_table_name} (' + ','.join(query) + ')'
+
+    def execute_queries(
+        self,
+        queries: List[str],
+        **kwargs
+    ) -> List:
+        data = None
+        tries = 0
+
+        while data is None and tries < 3:
+            if tries >= 1:
+                sleep(1)
+
+            try:
+                data = super().execute_queries(queries, **kwargs)
+            except TrinoUserError as err:
+                print(err)
+
+            tries += 1
+
+        return data or []
+
+    def load(
+        self,
+        query_string: str,
+        **kwargs,
+    ) -> DataFrame:
+        data = None
+        tries = 0
+
+        while data is None and tries < 3:
+            if tries >= 1:
+                sleep(1)
+
+            try:
+                data = super().load(query_string, **kwargs)
+            except TrinoUserError as err:
+                print(err)
+
+            tries += 1
+
+        return data
 
     def open(self) -> None:
         with self.printer.print_msg('Opening connection to Trino database'):
             connect_kwargs = dict(
-                catalog=self.settings['catalog'],
-                host=self.settings['host'],
-                port=self.settings['port'],
-                schema=self.settings['schema'],
-                user=self.settings['user'],
+                catalog=self.settings.get('catalog'),
+                host=self.settings.get('host'),
+                http_headers=self.settings.get('http_headers'),
+                http_scheme=self.settings.get('http_scheme'),
+                port=self.settings.get('port'),
+                schema=self.settings.get('schema'),
+                session_properties=self.settings.get('session_properties'),
+                source=self.settings.get('source'),
+                user=self.settings.get('user'),
+                verify=self.settings.get('verify'),
             )
 
             if self.settings.get('password'):
                 connect_kwargs['auth'] = \
                     BasicAuthentication(
                         self.settings['user'], self.settings['password'])
-                connect_kwargs['http_scheme'] = 'https'
+                if 'http_scheme' not in connect_kwargs:
+                    connect_kwargs['http_scheme'] = 'https'
             self._ctx = ConnectionWrapper(**connect_kwargs)
 
     def table_exists(self, schema_name: str, table_name: str) -> bool:
         with self.conn.cursor() as cur:
-            catalog = self.settings['catalog']
+            catalog = self.default_database()
+
+            cur.execute(f'SHOW SCHEMAS FROM {catalog} LIKE \'{schema_name}\'')
+            if len(cur.fetchall()) == 0:
+                return False
+
             cur.execute('\n'.join([
                 f'SHOW TABLES FROM {catalog}.{schema_name} LIKE \'{table_name}\''
             ]))
@@ -124,7 +207,8 @@ class Trino(BaseSQL):
         cursor: Cursor,
         df: DataFrame,
         full_table_name: str,
-        buffer: Union[IO, None] = None
+        buffer: Union[IO, None] = None,
+        **kwargs,
     ) -> None:
         values = []
         for _, row in df.iterrows():
@@ -187,13 +271,12 @@ class Trino(BaseSQL):
         """
 
         if type(df) is dict:
-            df = pd.DataFrame([df])
+            df = DataFrame([df])
         elif type(df) is list:
-            df = pd.DataFrame(df)
+            df = DataFrame(df)
 
-        catalog = self.settings['catalog']
-        schema = self.settings['schema']
-        full_table_name = f'{catalog}.{schema}.{table_name}'
+        catalog = self.default_database()
+        full_table_name = f'{catalog}.{schema_name}.{table_name}'
 
         if not query_string:
             if index:
@@ -204,11 +287,11 @@ class Trino(BaseSQL):
 
         def __process():
             buffer = StringIO()
-            table_exists = self.table_exists(schema, table_name)
+            table_exists = self.table_exists(schema_name, table_name)
 
             with self.conn.cursor() as cur:
-                if schema:
-                    cur.execute(f'CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}')
+                if schema_name:
+                    cur.execute(f'CREATE SCHEMA IF NOT EXISTS {catalog}.{schema_name}')
 
                 should_create_table = not table_exists
 

@@ -8,12 +8,26 @@ import yaml
 
 DATA_PROVIDERS = [
     DataSource.BIGQUERY,
+    DataSource.CLICKHOUSE,
+    DataSource.DRUID,
     DataSource.MSSQL,
     DataSource.MYSQL,
     DataSource.POSTGRES,
     DataSource.REDSHIFT,
     DataSource.SNOWFLAKE,
+    DataSource.TRINO,
 ]
+DATA_PROVIDERS_NAME = {
+    DataSource.BIGQUERY: 'BigQuery',
+    DataSource.CLICKHOUSE: 'ClickHouse',
+    DataSource.DRUID: 'Druid',
+    DataSource.MSSQL: 'Microsoft SQL Server',
+    DataSource.MYSQL: 'MySQL',
+    DataSource.POSTGRES: 'PostgreSQL',
+    DataSource.REDSHIFT: 'Redshift',
+    DataSource.SNOWFLAKE: 'Snowflake',
+    DataSource.TRINO: 'Trino',
+}
 
 
 class DataProviderResource(GenericResource):
@@ -27,7 +41,7 @@ class DataProviderResource(GenericResource):
                 print(exc)
 
         collection = [dict(
-            id=ds.title(),
+            id=DATA_PROVIDERS_NAME[ds.value],
             profiles=[p for p in profiles if p != 'version'],
             value=ds.value,
         ) for ds in DATA_PROVIDERS]

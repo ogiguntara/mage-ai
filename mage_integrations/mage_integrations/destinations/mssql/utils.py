@@ -20,6 +20,24 @@ def clean_column_name(col):
     return col_new
 
 
+def build_alter_table_command(
+    column_type_mapping: Dict,
+    columns: List[str],
+    full_table_name: str,
+    column_identifier: str = '',
+) -> str:
+    if not columns:
+        return None
+
+    columns_and_types = [
+        f"{column_identifier}{clean_column_name(col)}{column_identifier}" +
+        f" {column_type_mapping[col]['type_converted']}" for col
+        in columns
+    ]
+    # TODO: support add new unique constraints
+    return f"ALTER TABLE {full_table_name} ADD {', '.join(columns_and_types)}"
+
+
 def build_create_table_command(
     column_type_mapping: Dict,
     columns: List[str],
@@ -55,8 +73,8 @@ def build_create_table_command(
         columns_and_types.append(f"CONSTRAINT {index_name} Unique({', '.join(unique_constraints)})")
 
     if key_properties and len(key_properties) >= 1:
-        col = clean_column_name(key_properties[0])
-        columns_and_types.append(f'PRIMARY KEY ({col})')
+        clean_keys = [clean_column_name(k) for k in key_properties]
+        columns_and_types.append(f'PRIMARY KEY ({", ".join(clean_keys)})')
 
     return f"CREATE TABLE {full_table_name} ({', '.join(columns_and_types)})"
 

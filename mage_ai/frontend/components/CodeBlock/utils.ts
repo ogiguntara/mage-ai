@@ -1,12 +1,16 @@
 import BlockType, {
   BLOCK_TYPE_NAME_MAPPING,
+  BLOCK_TYPES_WITH_NO_PARENTS,
   BlockRequestPayloadType,
   BlockTypeEnum,
   CONVERTIBLE_BLOCK_TYPES,
+  TagEnum,
 } from '@interfaces/BlockType';
 import PipelineType from '@interfaces/PipelineType';
 import { FlyoutMenuItemType } from '@oracle/components/FlyoutMenu';
-import { lowercase } from '@utils/string';
+import { capitalizeRemoveUnderscoreLower, lowercase } from '@utils/string';
+import { goToWithQuery } from '@utils/routing';
+import { ViewKeyEnum } from '@components/Sidekick/constants';
 
 export const getUpstreamBlockUuids = (
   currentBlock: BlockType,
@@ -14,10 +18,8 @@ export const getUpstreamBlockUuids = (
 ): string[] => {
   const upstreamBlocks = newBlock?.upstream_blocks || [];
 
-  if (BlockTypeEnum.CHART !== currentBlock.type
-    && BlockTypeEnum.SCRATCHPAD !== currentBlock.type
-    && BlockTypeEnum.CHART !== newBlock?.type
-    && BlockTypeEnum.SCRATCHPAD !== newBlock?.type
+  if (!BLOCK_TYPES_WITH_NO_PARENTS.includes(currentBlock?.type)
+    && !BLOCK_TYPES_WITH_NO_PARENTS.includes(newBlock?.type)
     && (
       BlockTypeEnum.DATA_LOADER !== newBlock?.type
         || BlockTypeEnum.SENSOR === currentBlock.type
@@ -27,6 +29,21 @@ export const getUpstreamBlockUuids = (
   }
 
   return upstreamBlocks;
+};
+
+export const getDownstreamBlockUuids = (
+  currentBlock: BlockType,
+  newBlock?: BlockRequestPayloadType,
+): string[] => {
+  let downstreamBlocks = [];
+
+  if (!BLOCK_TYPES_WITH_NO_PARENTS.includes(currentBlock?.type)
+    && !BLOCK_TYPES_WITH_NO_PARENTS.includes(newBlock?.type)
+  ) {
+    downstreamBlocks = downstreamBlocks.concat(currentBlock?.downstream_blocks || []);
+  }
+
+  return downstreamBlocks;
 };
 
 export const buildConvertBlockMenuItems = (
@@ -80,7 +97,7 @@ export const getMoreActionsItems = (
   }) => void,
   deleteBlock: (block: BlockType) => void,
   setOutputCollapsed: (outputCollapsed: boolean) => void,
-  isStreamingPipeline: boolean,
+  onlyIncludeDeleteBlock?: boolean,
   opts?: {
     blocksMapping: {
       [uuid: string]: BlockType;
@@ -109,11 +126,13 @@ export const getMoreActionsItems = (
     reduce_output: reduceOutput,
   } = configuration || {};
   const isDBT = BlockTypeEnum.DBT === block?.type;
-
   const items: FlyoutMenuItemType[] = [];
 
-  if (BlockTypeEnum.EXTENSION === block.type) {
-  } else {
+  if (![
+    BlockTypeEnum.CALLBACK,
+    BlockTypeEnum.EXTENSION,
+    BlockTypeEnum.MARKDOWN,
+  ].includes(block.type)) {
     items.push({
       label: () => isDBT
         ? 'Execute and run upstream blocks'
@@ -242,15 +261,23 @@ export const getMoreActionsItems = (
 
     items.push({
       label: () => has_callback ? 'Remove callback' : 'Add callback',
-      onClick: () => savePipelineContent({
-        block: {
-          ...block,
-          has_callback: !has_callback,
-        },
-      }).then(() => {
-        fetchFileTree();
-        fetchPipeline();
-      }),
+      onClick: () => {
+        if (has_callback) {
+          return savePipelineContent({
+            block: {
+              ...block,
+              has_callback: !has_callback,
+            },
+          }).then(() => {
+            fetchFileTree();
+            fetchPipeline();
+          });
+        } else {
+          goToWithQuery({
+            sideview: ViewKeyEnum.CALLBACKS,
+          });
+        }
+      },
       uuid: 'has_callback',
     });
   }
@@ -264,9 +291,65 @@ export const getMoreActionsItems = (
     uuid: 'delete_block',
   });
 
-  if (isStreamingPipeline) {
+  if (onlyIncludeDeleteBlock) {
     return [items.pop()];
   }
 
   return items;
 };
+
+export function buildTags({ tags }: BlockType): {
+  description?: string;
+  title: string;
+}[] {
+  const arr = [];
+
+  tags?.forEach((tag: TagEnum) => {
+    if (TagEnum.DYNAMIC === tag) {
+      arr.push({
+        description: 'This block will create N blocks for each of its downstream blocks.',
+        title: capitalizeRemoveUnderscoreLower(TagEnum.DYNAMIC),
+      });
+    } else if (TagEnum.DYNAMIC_CHILD === tag) {
+      arr.push({
+        description: 'This block is dynamically created by its upstream parent block that is dynamic.',
+        title: capitalizeRemoveUnderscoreLower(TagEnum.DYNAMIC_CHILD),
+      });
+    } else if (TagEnum.REDUCE_OUTPUT === tag) {
+      arr.push({
+        description: 'Reduce output from all dynamically created blocks into a single array output.',
+        title: capitalizeRemoveUnderscoreLower(TagEnum.REDUCE_OUTPUT),
+      });
+    } else {
+      arr.push({
+        title: tag,
+      });
+    }
+  });
+
+  return arr;
+}
+
+export function buildBorderProps({
+  block,
+  dynamic,
+  dynamicUpstreamBlock,
+  hasError,
+  reduceOutput,
+  reduceOutputUpstreamBlock,
+  selected,
+}) {
+  const dynamicChildBlock = dynamicUpstreamBlock && !reduceOutputUpstreamBlock;
+
+  return {
+    borderColorShareProps: {
+      blockColor: block?.color,
+      blockType: block?.type,
+      dynamicBlock: dynamic,
+      dynamicChildBlock,
+      hasError,
+      selected,
+    },
+    tags: buildTags(block),
+  };
+}

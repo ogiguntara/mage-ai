@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Integer,
+    JSON,
     String,
 )
 from sqlalchemy.orm import relationship, validates
@@ -26,19 +27,38 @@ class User(BaseModel):
     password_salt = Column(String(255), default=None)
     roles = Column(Integer, default=None)
     username = Column(String(255), default=None, index=True, unique=True)
+    preferences = Column(JSON, default=None)
 
     oauth2_applications = relationship('Oauth2Application', back_populates='user')
     oauth2_access_tokens = relationship('Oauth2AccessToken', back_populates='user')
 
     @validates('email')
     def validate_email(self, key, value):
-        if value:
+        if not value:
+            raise ValidationError('Email address cannot be blank.', metadata=dict(
+                key=key,
+                value=value,
+            ))
+        else:
+            existing_email = User.query.filter(
+                User.email == value
+            ).one_or_none()
+            if self.email != value and existing_email is not None:
+                raise ValidationError(
+                    'Email address is already in use. Please choose a different one.',
+                    metadata=dict(
+                        key=key,
+                        value=value,
+                    )
+                )
+
             regex = re.compile(r"([-!#-'*+/-9=?A-Z^-~]+(\.[-!#-'*+/-9=?A-Z^-~]+)*|\"([]!#-[^-~ \t]|(\\[\t -~]))+\")@([-!#-'*+/-9=?A-Z^-~]+(\.[-!#-'*+/-9=?A-Z^-~]+)*|\[[\t -Z^-~]*])")  # noqa: E501
             if not re.fullmatch(regex, value):
                 raise ValidationError('Email address is invalid.', metadata=dict(
                     key=key,
                     value=value,
                 ))
+
         return value
 
     @property
@@ -52,6 +72,13 @@ class User(BaseModel):
                 return 'Editor'
             elif self.roles & 4 != 0:
                 return 'Viewer'
+
+    @property
+    def is_admin(self) -> bool:
+        if not self.owner and self.roles:
+            return self.roles & 1 != 0
+
+        return False
 
 
 class Oauth2Application(BaseModel):

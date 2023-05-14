@@ -2,7 +2,12 @@ from mage_ai.api.errors import ApiError
 from mage_ai.api.resources.GenericResource import GenericResource
 from mage_ai.data_preparation.models.block import Block
 from mage_ai.data_preparation.models.block.dbt import DBTBlock
-from mage_ai.data_preparation.models.constants import BlockType, FILE_EXTENSION_TO_BLOCK_LANGUAGE
+from mage_ai.data_preparation.models.block.utils import clean_name
+from mage_ai.data_preparation.models.constants import (
+    BlockLanguage,
+    BlockType,
+    FILE_EXTENSION_TO_BLOCK_LANGUAGE,
+)
 from mage_ai.data_preparation.repo_manager import get_repo_path
 from mage_ai.data_preparation.utils.block.convert_content import convert_to_block
 from mage_ai.orchestration.db import safe_db_query
@@ -15,21 +20,41 @@ class BlockResource(GenericResource):
     def create(self, payload, user, **kwargs):
         pipeline = kwargs.get('parent_model')
 
+        content = payload.get('content')
+        name = payload.get('name')
+        language = payload.get('language')
+        uuid = clean_name(name)
+        """
+        New DBT models include "content" in its block create payload,
+        whereas creating blocks from existing DBT model files do not.
+        """
+        if payload.get('type') == BlockType.DBT and content and language == BlockLanguage.SQL:
+            dbt_block = DBTBlock(
+                name,
+                uuid,
+                BlockType.DBT,
+                configuration=payload.get('configuration'),
+                language=language,
+            )
+            if dbt_block.file_path and dbt_block.file.exists():
+                raise Exception('DBT model at that folder location already exists. \
+                    Please choose a different model name, or add a DBT model by \
+                    selecting single model from file.')
+
         block = Block.create(
-            payload.get('name') or payload.get('uuid'),
+            name or payload.get('uuid'),
             payload.get('type'),
             get_repo_path(),
             color=payload.get('color'),
             config=payload.get('config'),
             configuration=payload.get('configuration'),
             extension_uuid=payload.get('extension_uuid'),
-            language=payload.get('language'),
+            language=language,
             pipeline=pipeline,
             priority=payload.get('priority'),
             upstream_block_uuids=payload.get('upstream_blocks', []),
         )
 
-        content = payload.get('content')
         if content:
             if payload.get('converted_from'):
                 content = convert_to_block(block, content)
@@ -44,13 +69,18 @@ class BlockResource(GenericResource):
         error = ApiError.RESOURCE_INVALID.copy()
 
         query = kwargs.get('query', {})
+
         extension_uuid = query.get('extension_uuid', [None])
         if extension_uuid:
             extension_uuid = extension_uuid[0]
 
+        block_type = query.get('block_type', [None])
+        if block_type:
+            block_type = block_type[0]
+
         pipeline = kwargs.get('parent_model')
         if pipeline:
-            block = pipeline.get_block(pk, extension_uuid=extension_uuid)
+            block = pipeline.get_block(pk, block_type=block_type, extension_uuid=extension_uuid)
             if block:
                 return self(block, user, **kwargs)
             else:
@@ -74,8 +104,8 @@ class BlockResource(GenericResource):
         parts2 = block_uuid_with_extension.split('.')
         language = None
         if len(parts2) >= 2:
-            block_uuid = parts2[0]
-            language = FILE_EXTENSION_TO_BLOCK_LANGUAGE[parts2[1]]
+            block_uuid = '.'.join(parts2[:-1])
+            language = FILE_EXTENSION_TO_BLOCK_LANGUAGE[parts2[-1]]
         else:
             block_uuid = block_uuid_with_extension
 
@@ -88,7 +118,7 @@ class BlockResource(GenericResource):
                 language=language,
             )
         else:
-            block = Block(block_uuid, block_uuid, block_type, language=language)
+            block = Block.get_block(block_uuid, block_uuid, block_type, language=language)
 
         if not block.exists():
             error.update(ApiError.RESOURCE_NOT_FOUND)
@@ -98,7 +128,12 @@ class BlockResource(GenericResource):
 
     @safe_db_query
     def delete(self, **kwargs):
-        return self.model.delete()
+        query = kwargs.get('query', {})
+
+        force = query.get('force', [False])
+        if force:
+            force = force[0]
+        return self.model.delete(force=force)
 
     @safe_db_query
     def update(self, payload, **kwargs):

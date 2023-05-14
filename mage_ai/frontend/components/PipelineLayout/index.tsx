@@ -23,6 +23,7 @@ import {
   get,
   set,
 } from '@storage/localStorage';
+import { NavigationItem } from '@components/Dashboard/VerticalNavigation';
 import { PAGE_NAME_EDIT } from '@components/PipelineDetail/constants';
 import { capitalize } from '@utils/string';
 import { useWindowSize } from '@utils/sizes';
@@ -30,10 +31,15 @@ import { useWindowSize } from '@utils/sizes';
 type PipelineLayoutProps = {
   after?: any;
   afterHeader?: any;
+  afterHeightOffset?: number;
   afterHidden?: boolean;
+  afterNavigationItems?: NavigationItem[];
+  afterOverflow?: 'hidden';
   afterSubheader?: any;
   before?: any;
   beforeHeader?: any;
+  beforeHeightOffset?: number;
+  beforeNavigationItems?: NavigationItem[];
   children: any;
   errors: any;
   headerOffset?: number;
@@ -50,10 +56,15 @@ type PipelineLayoutProps = {
 function PipelineLayout({
   after,
   afterHeader,
+  afterHeightOffset,
   afterHidden: afterHiddenProp,
+  afterNavigationItems,
+  afterOverflow,
   afterSubheader,
   before,
   beforeHeader,
+  beforeHeightOffset,
+  beforeNavigationItems,
   children,
   errors,
   headerOffset,
@@ -137,9 +148,8 @@ function PipelineLayout({
     if (pipeline) {
       breadcrumbs.push(...[
         {
-          // gradientColor: PAGE_NAME_EDIT === page ? null : PURPLE_BLUE,
           bold: PAGE_NAME_EDIT !== page,
-          label: () => pipeline?.name,
+          label: () => pipeline?.uuid,
           linkProps: {
             as: `/pipelines/${pipeline?.uuid}`,
             href: '/pipelines/[pipeline]',
@@ -150,7 +160,6 @@ function PipelineLayout({
       if (PAGE_NAME_EDIT === page) {
         breadcrumbs.push(...[
           {
-            // gradientColor: PURPLE_BLUE,
             bold: true,
             label: () => capitalize(page),
           },
@@ -178,19 +187,25 @@ function PipelineLayout({
       <TripleLayout
         after={after}
         afterHeader={afterHeader}
+        afterHeightOffset={afterHeightOffset}
         afterHidden={afterHidden}
         afterMousedownActive={afterMousedownActive}
+        afterNavigationItems={afterNavigationItems}
+        afterOverflow={afterOverflow}
         afterSubheader={afterSubheader}
         afterWidth={afterWidth}
         before={before}
         beforeHeader={beforeHeader}
+        beforeHeightOffset={beforeHeightOffset}
         beforeHidden={beforeHidden}
         beforeMousedownActive={beforeMousedownActive}
+        beforeNavigationItems={beforeNavigationItems}
         beforeWidth={beforeWidth}
         header={headerMemo}
         headerOffset={headerOffset}
         mainContainerHeader={mainContainerHeader}
         mainContainerRef={mainContainerRef}
+        navigationShowMore
         setAfterHidden={setAfterHidden}
         setAfterMousedownActive={setAfterMousedownActive}
         setAfterWidth={setAfterWidth}

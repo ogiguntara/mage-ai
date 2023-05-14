@@ -2,6 +2,7 @@ from mage_ai.data_preparation.models.block import Block
 from mage_ai.data_preparation.models.block.dbt.utils import (
     build_command_line_arguments,
     create_upstream_tables,
+    create_temporary_profile,
     fetch_model_data,
     load_profiles_async,
     parse_attributes,
@@ -9,12 +10,13 @@ from mage_ai.data_preparation.models.block.dbt.utils import (
     run_dbt_tests,
     update_model_settings,
 )
-from mage_ai.data_preparation.models.constants import BlockLanguage
+from mage_ai.data_preparation.models.constants import BlockLanguage, BlockType
 from mage_ai.data_preparation.repo_manager import get_repo_path
 from mage_ai.shared.hash import merge_dict
 from typing import Any, Dict, List
 import json
 import os
+import shutil
 import subprocess
 
 
@@ -54,12 +56,12 @@ class DBTBlock(Block):
                 targets=targets,
             )
         else:
-            dbt_dir = f'{get_repo_path()}/dbt'
+            dbt_dir = os.path.join(get_repo_path(), 'dbt')
             project_names = [
-                name for name in os.listdir(dbt_dir) if os.path.isdir(f'{dbt_dir}/{name}')
+                name for name in os.listdir(dbt_dir) if os.path.isdir(os.path.join(dbt_dir, name))
             ]
             for project_name in project_names:
-                profiles_full_path = f'{dbt_dir}/{project_name}/profiles.yml'
+                profiles_full_path = os.path.join(dbt_dir, project_name, 'profiles.yml')
                 targets = []
                 profiles = await load_profiles_async(project_name, profiles_full_path)
                 outputs = profiles.get('outputs')
@@ -119,8 +121,16 @@ class DBTBlock(Block):
             run_settings=run_settings,
             test_execution=test_execution,
         )
+
         project_full_path = command_line_dict['project_full_path']
+        profiles_dir = command_line_dict['profiles_dir']
         dbt_profile_target = command_line_dict['profile_target']
+
+        # Create a temporary profiles file with variables and secrets interpolated
+        _, temp_profile_full_path = create_temporary_profile(
+            project_full_path,
+            profiles_dir,
+        )
 
         is_sql = BlockLanguage.SQL == self.language
         if is_sql:
@@ -159,7 +169,7 @@ class DBTBlock(Block):
         if is_sql and test_execution:
             subprocess.run(
                 cmds,
-                preexec_fn=os.setsid,
+                preexec_fn=os.setsid,  # os.setsid doesn't work on Windows
                 stdout=stdout,
             )
             df = query_from_compiled_sql(
@@ -177,7 +187,7 @@ class DBTBlock(Block):
             proc = subprocess.Popen(
                 cmds,
                 bufsize=1,
-                preexec_fn=os.setsid,
+                preexec_fn=os.setsid,  # os.setsid doesn't work on Windows
                 stdout=stdout,
                 universal_newlines=True,
             )
@@ -188,7 +198,7 @@ class DBTBlock(Block):
                 raise subprocess.CalledProcessError(proc.returncode, proc.args)
 
         if not test_execution:
-            run_results_file_path = f'{project_full_path}/target/run_results.json'
+            run_results_file_path = os.path.join(project_full_path, 'target', 'run_results.json')
             with open(run_results_file_path, 'r') as f:
                 try:
                     run_results = json.load(f)
@@ -202,16 +212,31 @@ class DBTBlock(Block):
                     print(f'WARNING: no run results found at {run_results_file_path}.')
 
             if is_sql and dbt_command in ['build', 'run']:
-                df = fetch_model_data(
-                    self,
-                    dbt_profile_target,
-                    limit=1000,
-                )
-                self.store_variables(
-                    dict(df=df),
-                    execution_partition=execution_partition,
-                    override_outputs=True,
-                )
-                outputs = [df]
+                limit = 1000
+                if self.downstream_blocks and \
+                        len(self.downstream_blocks) >= 1 and \
+                        not all([BlockType.DBT == block.type for block in self.downstream_blocks]):
+                    limit = None
+
+                try:
+                    df = fetch_model_data(
+                        self,
+                        dbt_profile_target,
+                        limit=limit,
+                    )
+
+                    self.store_variables(
+                        dict(output_0=df),
+                        execution_partition=execution_partition,
+                        override_outputs=True,
+                    )
+                    outputs = [df]
+                except Exception as err:
+                    print(f'Error: {err}')
+
+        try:
+            shutil.rmtree(profiles_dir)
+        except Exception as err:
+            print(f'Error removing temporary profile at {temp_profile_full_path}: {err}')
 
         return outputs

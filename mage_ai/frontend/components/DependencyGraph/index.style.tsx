@@ -8,7 +8,7 @@ import { UNIT } from '@oracle/styles/units/spacing';
 export const GraphContainerStyle = styled.div<{
   height?: number;
 }>`
-  div:only-child {
+  div {
     ${ScrollbarStyledCss}
   }
 
@@ -20,6 +20,7 @@ export const GraphContainerStyle = styled.div<{
 export const NodeStyle = styled.div<{
   backgroundColor?: string;
   disabled: boolean;
+  height?: number;
   isCancelled: boolean;
   selected: boolean;
 }>`
@@ -46,6 +47,10 @@ export const NodeStyle = styled.div<{
     &:hover {
       cursor: not-allowed;
     }
+  `}
+
+  ${props => props.height && `
+    height: ${props.height}px;
   `}
 `;
 

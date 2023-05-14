@@ -1,4 +1,4 @@
-import useWebSocket from 'react-use-websocket';
+import * as path from 'path';
 import {
   useCallback,
   useEffect,
@@ -21,12 +21,10 @@ import FileType, {
   SpecialFileEnum,
 } from '@interfaces/FileType';
 import FlexContainer from '@oracle/components/FlexContainer';
-import KernelOutputType, { ExecutionStateEnum } from '@interfaces/KernelOutputType';
 import KeyboardShortcutButton from '@oracle/elements/Button/KeyboardShortcutButton';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import Spacing from '@oracle/elements/Spacing';
 import api from '@api';
-import { DEFAULT_TERMINAL_UUID } from '@components/Terminal';
 import {
   KEY_CODE_CONTROL,
   KEY_CODE_META,
@@ -43,7 +41,6 @@ import {
 import { find } from '@utils/array';
 import { getBlockFromFile } from '../FileBrowser/utils';
 import { getNonPythonBlockFromFile } from '@components/FileBrowser/utils';
-import { getWebSocket } from '@api/utils/url';
 import { isJsonString } from '@utils/string';
 import { onSuccess } from '@api/utils/response';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
@@ -58,6 +55,8 @@ type FileEditorProps = {
   openSidekickView: (newView: ViewKeyEnum) => void;
   pipeline: PipelineType;
   selectedFilePath: string;
+  sendTerminalMessage: (message: string, keep?: boolean) => void;
+  setDisableShortcuts: (disableShortcuts: boolean) => void;
   setErrors?: (errors: ErrorsType) => void;
   setFilesTouched: (data: {
     [path: string]: boolean;
@@ -74,6 +73,8 @@ function FileEditor({
   openSidekickView,
   pipeline,
   selectedFilePath,
+  sendTerminalMessage,
+  setDisableShortcuts,
   setErrors,
   setFilesTouched,
   setSelectedBlock,
@@ -82,6 +83,14 @@ function FileEditor({
   const [file, setFile] = useState<FileType>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const containerRef = useRef(null);
+
+  const token = useMemo(() => new AuthToken(), []);
+  const oauthWebsocketData = useMemo(() => ({
+    api_key: OAUTH2_APPLICATION_CLIENT_ID,
+    token: token.decodedToken.token,
+  }), [
+    token,
+  ]);
 
   const { data: serverStatus } = api.status.list();
   const repoPath = serverStatus?.status?.repo_path;
@@ -94,6 +103,12 @@ function FileEditor({
 
   const [content, setContent] = useState<string>(file?.content);
   const [touched, setTouched] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (active) {
+      setDisableShortcuts(true);
+    }
+  }, [active, setDisableShortcuts]);
 
   useEffect(() => {
     if (selectedFilePath) {
@@ -128,7 +143,7 @@ function FileEditor({
         content: value,
       },
     }).then(() => {
-      const fileName = decodeURIComponent(filePath).split('/').pop();
+      const fileName = decodeURIComponent(filePath).split(path.sep).pop();
       if (fileName === SpecialFileEnum.METADATA_YAML) {
         fetchVariables();
       }
@@ -158,9 +173,6 @@ function FileEditor({
         <CodeEditor
           autoHeight
           language={FILE_EXTENSION_TO_LANGUAGE_MAPPING[fileExtension]}
-          onSave={(value: string) => {
-            saveFile(value, file);
-          }}
           // TODO (tommy dang): implement later; see Codeblock/index.tsx for example
           // onDidChangeCursorPosition={onDidChangeCursorPosition}
           onChange={(value: string) => {
@@ -173,6 +185,9 @@ function FileEditor({
               [file?.path]: true,
             }));
             setTouched(true);
+          }}
+          onSave={(value: string) => {
+            saveFile(value, file);
           }}
           selected
           textareaFocused
@@ -213,7 +228,7 @@ function FileEditor({
         && getNonPythonBlockFromFile(file, file?.path)
       )
     )
-    && getBlockType(file.path.split('/')) !== BlockTypeEnum.SCRATCHPAD
+    && getBlockType(file.path.split(path.sep)) !== BlockTypeEnum.SCRATCHPAD
     && getBlockFromFile(file)
     && (
     <Button
@@ -248,33 +263,6 @@ function FileEditor({
     </Button>
   );
 
-  const {
-    lastJsonMessage,
-    sendMessage,
-  } = useWebSocket(getWebSocket(), {
-    shouldReconnect: () => true,
-  });
-
-  useEffect(() => {
-    if (lastJsonMessage) {
-      // @ts-ignore
-      const jsonMessage: KernelOutputType = lastJsonMessage;
-      const executionState = jsonMessage?.execution_state;
-      const messageUUID = jsonMessage?.uuid;
-
-      if (messageUUID === DEFAULT_TERMINAL_UUID) {
-        if (ExecutionStateEnum.BUSY === executionState) {
-          setLoading(true);
-        } else if (ExecutionStateEnum.IDLE === executionState) {
-          setLoading(false);
-        }
-      }
-    }
-  }, [
-    lastJsonMessage,
-    setLoading,
-  ]);
-
   const installPackagesButtonEl = (
     <Spacing m={2}>
       <KeyboardShortcutButton
@@ -283,11 +271,9 @@ function FileEditor({
         loading={loading}
         onClick={() => {
           openSidekickView(ViewKeyEnum.TERMINAL);
-          sendMessage(JSON.stringify({
-            api_key: OAUTH2_APPLICATION_CLIENT_ID,
-            code: `!pip install -r ${repoPath}/requirements.txt`,
-            token: (new AuthToken()).decodedToken.token,
-            uuid: DEFAULT_TERMINAL_UUID,
+          sendTerminalMessage(JSON.stringify({
+            ...oauthWebsocketData,
+            command: ['stdin', `pip install -r ${repoPath}/requirements.txt\r`],
           }));
         }}
         title={!repoPath

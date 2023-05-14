@@ -1,13 +1,16 @@
-from datetime import datetime
+from sqlalchemy.orm import selectinload
+
 from mage_ai.api.operations.constants import META_KEY_LIMIT, META_KEY_OFFSET
 from mage_ai.api.resources.DatabaseResource import DatabaseResource
-from mage_ai.data_integrations.utils.scheduler import initialize_state_and_runs
 from mage_ai.data_preparation.models.constants import PipelineType
 from mage_ai.data_preparation.models.pipeline import Pipeline
 from mage_ai.orchestration.db import safe_db_query
 from mage_ai.orchestration.db.models.schedules import BlockRun, PipelineRun
-from mage_ai.orchestration.pipeline_scheduler import get_variables
-from sqlalchemy.orm import selectinload
+from mage_ai.orchestration.pipeline_scheduler import (
+    configure_pipeline_run_payload,
+    start_scheduler,
+    stop_pipeline_run,
+)
 
 
 class PipelineRunResource(DatabaseResource):
@@ -148,70 +151,75 @@ class PipelineRunResource(DatabaseResource):
         pipeline_schedule = kwargs.get('parent_model')
 
         pipeline = Pipeline.get(pipeline_schedule.pipeline_uuid)
-
-        if 'variables' not in payload:
-            payload['variables'] = {}
-
-        payload['pipeline_schedule_id'] = pipeline_schedule.id
-        payload['pipeline_uuid'] = pipeline_schedule.pipeline_uuid
-        if payload.get('execution_date') is None:
-            payload['execution_date'] = datetime.utcnow()
-
-        is_integration = PipelineType.INTEGRATION == pipeline.type
-        if is_integration:
-            payload['create_block_runs'] = False
+        configured_payload, _ = configure_pipeline_run_payload(
+            pipeline_schedule,
+            pipeline.type,
+            payload,
+        )
 
         def _create_callback(resource):
-            from mage_ai.orchestration.pipeline_scheduler import PipelineScheduler
-
             pipeline_run = resource.model
-            pipeline_scheduler = PipelineScheduler(pipeline_run)
-
-            if is_integration:
-                initialize_state_and_runs(
-                    pipeline_run,
-                    pipeline_scheduler.logger,
-                    get_variables(pipeline_run),
-                )
-            else:
-                pipeline_run.create_block_runs()
-
-            pipeline_scheduler.start(should_schedule=False)
+            start_scheduler(pipeline_run)
 
         self.on_create_callback = _create_callback
 
-        return super().create(payload, user, **kwargs)
+        return super().create(configured_payload, user, **kwargs)
 
     @safe_db_query
     def update(self, payload, **kwargs):
-        if 'retry_blocks' == payload.get('pipeline_run_action') and \
-                PipelineRun.PipelineRunStatus.COMPLETED != self.model.status:
+        if 'retry_blocks' == payload.get('pipeline_run_action'):
             self.model.refresh()
-
             pipeline = Pipeline.get(self.model.pipeline_uuid)
+            block_runs_to_retry = []
+            from_block_uuid = payload.get('from_block_uuid')
+            if from_block_uuid is not None:
+                is_integration = pipeline.type == PipelineType.INTEGRATION
+                if is_integration:
+                    from_block = pipeline.block_from_block_uuid_with_stream(from_block_uuid)
+                else:
+                    from_block = pipeline.blocks_by_uuid.get(from_block_uuid)
 
-            incomplete_block_runs = \
-                list(
-                    filter(
-                        lambda br: br.status != BlockRun.BlockRunStatus.COMPLETED,
-                        self.model.block_runs
+                if from_block:
+                    downstream_blocks = from_block.get_all_downstream_blocks()
+                    if is_integration:
+                        block_uuid_suffix = from_block_uuid[len(from_block.uuid):]
+                        downstream_block_uuids = [from_block_uuid] + \
+                            [f'{b.uuid}{block_uuid_suffix}' for b in downstream_blocks]
+                    else:
+                        downstream_block_uuids = [from_block_uuid] + \
+                            [b.uuid for b in downstream_blocks]
+
+                    block_runs_to_retry = \
+                        list(
+                            filter(
+                                lambda br: br.block_uuid in downstream_block_uuids,
+                                self.model.block_runs
+                            )
+                        )
+            elif PipelineRun.PipelineRunStatus.COMPLETED != self.model.status:
+                block_runs_to_retry = \
+                    list(
+                        filter(
+                            lambda br: br.status != BlockRun.BlockRunStatus.COMPLETED,
+                            self.model.block_runs
+                        )
                     )
-                )
 
             # Update block run status to INITIAL
             BlockRun.batch_update_status(
-                [b.id for b in incomplete_block_runs],
+                [b.id for b in block_runs_to_retry],
                 BlockRun.BlockRunStatus.INITIAL,
             )
 
-            from mage_ai.orchestration.execution_process_manager \
-                import execution_process_manager
+            from mage_ai.orchestration.execution_process_manager import (
+                execution_process_manager,
+            )
 
             if PipelineType.STREAMING != pipeline.type:
                 if PipelineType.INTEGRATION == pipeline.type:
                     execution_process_manager.terminate_pipeline_process(self.model.id)
                 else:
-                    for br in incomplete_block_runs:
+                    for br in block_runs_to_retry:
                         execution_process_manager.terminate_block_process(
                             self.model.id,
                             br.id,
@@ -219,8 +227,11 @@ class PipelineRunResource(DatabaseResource):
 
             return super().update(dict(status=PipelineRun.PipelineRunStatus.RUNNING))
         elif PipelineRun.PipelineRunStatus.CANCELLED == payload.get('status'):
-            from mage_ai.orchestration.pipeline_scheduler import PipelineScheduler
+            pipeline = Pipeline.get(
+                self.model.pipeline_uuid,
+                check_if_exists=True,
+            )
 
-            PipelineScheduler(self.model).stop()
+            stop_pipeline_run(self.model, pipeline)
 
         return self

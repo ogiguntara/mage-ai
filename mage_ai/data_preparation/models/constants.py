@@ -24,6 +24,7 @@ LOGS_DIR = '.logs'
 
 
 class BlockLanguage(str, Enum):
+    MARKDOWN = 'markdown'
     PYTHON = 'python'
     R = 'r'
     SQL = 'sql'
@@ -43,8 +44,9 @@ class BlockType(str, Enum):
     CUSTOM = 'custom'
     DATA_EXPORTER = 'data_exporter'
     DATA_LOADER = 'data_loader'
-    EXTENSION = 'extension'
     DBT = 'dbt'
+    EXTENSION = 'extension'
+    MARKDOWN = 'markdown'
     SCRATCHPAD = 'scratchpad'
     SENSOR = 'sensor'
     TRANSFORMER = 'transformer'
@@ -59,12 +61,21 @@ class BlockColor(str, Enum):
     YELLOW = 'yellow'
 
 
+class CallbackStatus(str, Enum):
+    FAILURE = 'failure'
+    SUCCESS = 'success'
+
+
 class ExecutorType(str, Enum):
     LOCAL_PYTHON = 'local_python'
     ECS = 'ecs'
     GCP_CLOUD_RUN = 'gcp_cloud_run'
     K8S = 'k8s'
     PYSPARK = 'pyspark'
+
+    @classmethod
+    def is_valid_type(cls, executor_type: str) -> bool:
+        return executor_type.upper() in cls.__members__
 
 
 class PipelineType(str, Enum):
@@ -82,18 +93,28 @@ class PipelineStatus(str, Enum):
 
 
 BLOCK_LANGUAGE_TO_FILE_EXTENSION = {
+    BlockLanguage.MARKDOWN: 'md',
     BlockLanguage.PYTHON: 'py',
     BlockLanguage.R: 'r',
     BlockLanguage.SQL: 'sql',
     BlockLanguage.YAML: 'yaml',
 }
 
+
+CALLBACK_STATUSES = [
+    CallbackStatus.FAILURE,
+    CallbackStatus.SUCCESS,
+]
+
+
 FILE_EXTENSION_TO_BLOCK_LANGUAGE = {
+    'md': BlockLanguage.MARKDOWN,
     'py': BlockLanguage.PYTHON,
     'r': BlockLanguage.R,
     'sql': BlockLanguage.SQL,
     'yaml': BlockLanguage.YAML,
 }
+
 
 CUSTOM_EXECUTION_BLOCK_TYPES = [
     BlockType.CHART,
@@ -106,8 +127,8 @@ CUSTOM_EXECUTION_BLOCK_TYPES = [
     BlockType.TRANSFORMER,
 ]
 
-
 NON_PIPELINE_EXECUTABLE_BLOCK_TYPES = [
     BlockType.CHART,
+    BlockType.MARKDOWN,
     BlockType.SCRATCHPAD,
 ]

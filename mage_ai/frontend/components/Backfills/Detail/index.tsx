@@ -21,9 +21,10 @@ import PipelineRunType, {
   RunStatus,
 } from '@interfaces/PipelineRunType';
 import PipelineType from '@interfaces/PipelineType';
-import PipelineVariableType from '@interfaces/PipelineVariableType';
+import PipelineVariableType, { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
+import Spinner from '@oracle/components/Spinner';
 import Table from '@components/shared/Table';
 import Text from '@oracle/elements/Text';
 import api from '@api';
@@ -50,6 +51,7 @@ import {
   getFormattedVariable,
   getFormattedVariables,
 } from '@components/Sidekick/utils';
+import { getTimeInUTCString } from '@components/Triggers/utils';
 import { goToWithQuery } from '@utils/routing';
 import { isEmptyObject } from '@utils/hash';
 import { isViewer } from '@utils/session';
@@ -61,15 +63,19 @@ const LIMIT = 40;
 
 type BackfillDetailProps = {
   backfill: BackfillType;
+  errors: ErrorsType;
   fetchBackfill: () => void;
   pipeline: PipelineType;
+  setErrors: (errors: ErrorsType) => void;
   variables?: PipelineVariableType[];
 };
 
 function BackfillDetail({
   backfill: model,
+  errors,
   fetchBackfill,
   pipeline,
+  setErrors,
   variables,
 }: BackfillDetailProps) {
   const isViewerRole = isViewer();
@@ -92,7 +98,6 @@ function BackfillDetail({
   } = pipeline;
 
   const q = queryFromUrl();
-  const [errors, setErrors] = useState<ErrorsType>(null);
 
   const pipelineRunsRequestQuery: PipelineRunReqQueryParamsType = {
     _limit: LIMIT,
@@ -108,7 +113,6 @@ function BackfillDetail({
     {
       ...pipelineRunsRequestQuery,
       backfill_id: modelID,
-      order_by: ['id DESC'],
     },
     {
       refreshInterval: 3000,
@@ -154,10 +158,10 @@ function BackfillDetail({
           })}
           pipelineRuns={pipelineRuns}
           selectedRun={selectedRun}
+          setErrors={setErrors}
         />
         <Spacing p={2}>
           <Paginate
-            page={Number(page)}
             maxPages={9}
             onUpdate={(p) => {
               const newPage = Number(p);
@@ -166,10 +170,11 @@ function BackfillDetail({
                 page: newPage >= 0 ? newPage : 0,
               };
               router.push(
-                '/pipelines/[pipeline]/triggers/[...slug]',
-                `/pipelines/${pipelineUUID}/triggers/${modelID}?${queryString(updatedQuery)}`,
+                '/pipelines/[pipeline]/backfills/[...slug]',
+                `/pipelines/${pipelineUUID}/backfills/${modelID}?${queryString(updatedQuery)}`,
               );
             }}
+            page={Number(page)}
             totalPages={Math.ceil(totalRuns / LIMIT)}
           />
         </Spacing>
@@ -177,9 +182,14 @@ function BackfillDetail({
     );
   }, [
     fetchPipelineRuns,
-    pipeline,
+    modelID,
     pipelineRuns,
+    pipelineUUID,
+    q,
+    router,
     selectedRun,
+    showPreviewRuns,
+    totalRuns,
   ]);
 
   const [selectedTab, setSelectedTab] = useState(TABS[0]);
@@ -260,7 +270,7 @@ function BackfillDetail({
           success={BackfillStatusEnum.RUNNING === status || BackfillStatusEnum.COMPLETED === status}
         >
           {status || 'inactive'}
-        </Text>
+        </Text>,
       ],
     ];
 
@@ -283,7 +293,7 @@ function BackfillDetail({
             key="backfill_start_date"
             monospace
           >
-            {startDatetime}
+            {getTimeInUTCString(startDatetime)}
           </Text>,
         ],
         [
@@ -301,7 +311,7 @@ function BackfillDetail({
             key="backfill_end_date"
             monospace
           >
-            {endDatetime}
+            {getTimeInUTCString(endDatetime)}
           </Text>,
         ],
         [
@@ -372,9 +382,9 @@ function BackfillDetail({
     endDatetime,
     intervalType,
     intervalUnits,
-    isActive,
     startDatetime,
     status,
+    totalRunCount,
   ]);
 
   const modelVariables = useMemo(() => modelVariablesInit || {}, [modelVariablesInit]);
@@ -389,7 +399,7 @@ function BackfillDetail({
         });
       });
     } else {
-      arr = getFormattedVariables(variables, block => block.uuid === 'global');
+      arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID);
     }
 
     if (typeof arr === 'undefined' || !arr?.length) {
@@ -614,7 +624,12 @@ function BackfillDetail({
 
         <Divider light mt={PADDING_UNITS} short />
 
-        {tablePipelineRuns}
+        {!dataPipelineRuns
+          ?
+            <Spacing m={2}>
+              <Spinner inverted />
+            </Spacing>
+          : tablePipelineRuns}
       </PipelineDetailPage>
     </>
   );

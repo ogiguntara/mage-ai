@@ -15,6 +15,10 @@
       "dark": "#121212"
     }
   },
+  "feedback": {
+    "suggestEdit": true,
+    "raiseIssue": true
+  },
   "metadata": {
     "og:image": "https://media.graphassets.com/j4XVqcsxTG2x50kBJryE",
     "twitter:site": "@mage_ai"
@@ -53,15 +57,16 @@
       "group": "Tutorials",
       "pages": [
         {
-          "group": "ETL",
+          "group": "ETL pipeline",
           "pages": [
             "tutorials/load-api-data",
             "tutorials/etl/complete-project"
           ]
         },
+        "guides/data-integration-pipeline",
         "tutorials/setup-dbt",
         {
-          "group": "ML",
+          "group": "Machine learning pipeline",
           "pages": [
             "tutorials/train-model",
             "tutorials/train/complete-project"
@@ -123,6 +128,7 @@
         "dbt/running-dbt-tests",
         "dbt/sources",
         "dbt/connection-profiles",
+        "dbt/incremental-models",
         "dbt/docs"
       ]
     },
@@ -146,32 +152,49 @@
               "pages": [
                 "design/data-loading",
                 "guides/load-data-s3",
-                "guides/io_config"
+                "guides/io_config",
+                "development/blocks/data_loaders/templates"
               ]
             },
             {
               "group": "Transformer",
               "pages": [
-                "guides/transformer-blocks"
+                "guides/transformer-blocks",
+                "development/blocks/transformers/templates"
               ]
             },
             {
               "group": "Data exporter",
               "pages": [
-                "guides/export-data-s3"
+                "guides/export-data-s3",
+                "development/blocks/data_exporters/templates"
               ]
             },
             {
               "group": "Sensors",
               "pages": [
-                "guides/sensors"
+                "guides/sensors",
+                "development/blocks/sensors/templates"
               ]
             },
-            "guides/blocks/callbacks",
-            "guides/sql-blocks",
+            {
+              "group": "Callbacks",
+              "pages": [
+                "development/blocks/callbacks/overview",
+                "development/blocks/callbacks/templates"
+              ]
+            },
+            {
+              "group": "SQL",
+              "pages": [
+                "guides/sql-blocks",
+                "development/blocks/sql/trino"
+              ]
+            },
             "guides/r-blocks",
             "guides/blocks/dynamic-blocks",
-            "guides/blocks/custom-blocks"
+            "guides/blocks/custom-blocks",
+            "guides/blocks/markdown-blocks"
           ]
         },
         {
@@ -189,7 +212,9 @@
             {
               "group": "Sources",
               "pages": [
+                "guides/streaming/sources/amazon-sqs",
                 "guides/streaming/sources/azure-event-hub",
+                "guides/streaming/sources/google-cloud-pubsub",
                 "guides/streaming/sources/kafka",
                 "guides/streaming/sources/kinesis"
               ]
@@ -198,6 +223,7 @@
               "group": "Destinations",
               "pages": [
                 "guides/streaming/destinations/amazon-s3",
+                "guides/streaming/destinations/dummy",
                 "guides/streaming/destinations/kafka",
                 "guides/streaming/destinations/kinesis",
                 "guides/streaming/destinations/opensearch",
@@ -212,7 +238,8 @@
           "group": "Testing",
           "pages": [
             "guides/data-validation",
-            "development/testing/great-expectations"
+            "development/testing/great-expectations",
+            "development/testing/unit-tests"
           ]
         },
         {
@@ -229,6 +256,7 @@
             "development/versioning/file-versions"
           ]
         },
+        "development/environment-variables",
         {
           "group": "Team management",
           "pages": [
@@ -257,7 +285,9 @@
                 "guides/triggers/events/aws"
               ]
             },
-            "guides/trigger-pipeline-api"
+            "guides/trigger-pipeline-api",
+            "orchestration/triggers/trigger-pipeline",
+            "guides/triggers/configure-triggers-in-code"
           ]
         },
         {
@@ -265,6 +295,12 @@
           "pages": [
             "orchestration/backfills/overview",
             "orchestration/backfills/guides"
+          ]
+        },
+        {
+          "group": "Pipeline runs",
+          "pages": [
+            "orchestration/pipeline-runs/retrying-block-runs"
           ]
         }
       ]
@@ -287,6 +323,7 @@
               "pages": [
                 "production/ci-cd/local-cloud/repository-setup",
                 "production/ci-cd/local-cloud/github-actions",
+                "production/ci-cd/staging-production/github-actions",
                 "production/ci-cd/local-cloud/gitlab-ci-cd",
                 "production/ci-cd/local-cloud/buildkite"
               ]
@@ -296,6 +333,7 @@
         {
           "group": "Deployment",
           "pages": [
+            "production/deploying-to-cloud/architecture",
             "production/deploying-to-cloud/using-terraform",
             "production/deploying-to-cloud/using-helm",
             {
@@ -356,7 +394,8 @@
           "group": "Monitoring",
           "pages": [
             "production/observability/monitoring",
-            "production/observability/datadog"
+            "production/observability/datadog",
+            "production/observability/sentry"
           ]
         },
         {
@@ -364,6 +403,7 @@
           "pages": [
             "production/observability/alerting-slack",
             "production/observability/alerting-teams",
+            "production/observability/alerting-opsgenie",
             "production/observability/alerting-email"
           ]
         }
@@ -378,6 +418,8 @@
           "group": "Data",
           "pages": [
             "integrations/databases/BigQuery",
+            "integrations/databases/ClickHouse",
+            "integrations/databases/MicrosoftSQLServer",
             "integrations/databases/MySQL",
             "integrations/databases/PostgreSQL",
             "integrations/databases/Redshift",
@@ -468,7 +510,8 @@
           "pages": [
             "contributing/frontend/overview"
           ]
-        }
+        },
+        "contributing/statistics/overview"
       ]
     },
     {
@@ -493,6 +536,8 @@
     }
   },
   "api": {
-    "hidePlayground": true
+    "playground": {
+       "mode": "hide"
+    }
   }
 }

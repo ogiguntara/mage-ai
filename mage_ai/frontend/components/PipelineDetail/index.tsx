@@ -1,3 +1,4 @@
+import * as path from 'path';
 import React, {
   createRef,
   useCallback,
@@ -6,9 +7,13 @@ import React, {
   useState,
 } from 'react';
 import { CSSTransition } from 'react-transition-group';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
+import { useMutation } from 'react-query';
 
 import AddNewBlocks from '@components/PipelineDetail/AddNewBlocks';
 import AutocompleteItemType from '@interfaces/AutocompleteItemType';
+import BlockTemplateType from '@interfaces/BlockTemplateType';
 import BlockType, {
   BlockLanguageEnum,
   BlockRequestPayloadType,
@@ -16,17 +21,18 @@ import BlockType, {
   SetEditingBlockType,
 } from '@interfaces/BlockType';
 import ClickOutside from '@oracle/components/ClickOutside';
-import CodeBlock from '@components/CodeBlock';
+import CodeBlock, { DEFAULT_SQL_CONFIG_KEY_LIMIT } from '@components/CodeBlock';
 import DataProviderType from '@interfaces/DataProviderType';
 import ErrorsType from '@interfaces/ErrorsType';
 import FileSelectorPopup from '@components/FileSelectorPopup';
 import FileType, { FileExtensionEnum } from '@interfaces/FileType';
+import HiddenBlock from '@components/CodeBlock/HiddenBlock';
 import IntegrationPipeline from '@components/IntegrationPipeline';
 import KernelOutputType, { ExecutionStateEnum } from '@interfaces/KernelOutputType';
-import KernelType, { SetMessagesType } from '@interfaces/KernelType';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import PipelineVariableType from '@interfaces/PipelineVariableType';
 import Spacing from '@oracle/elements/Spacing';
+import api from '@api';
 import usePrevious from '@utils/usePrevious';
 import {
   ANIMATION_DURATION,
@@ -42,10 +48,8 @@ import {
 } from '@interfaces/ChartBlockType';
 import {
   KEY_CODES_SYSTEM,
-  KEY_CODE_A,
   KEY_CODE_ARROW_DOWN,
   KEY_CODE_ARROW_UP,
-  KEY_CODE_B,
   KEY_CODE_CONTROL,
   KEY_CODE_D,
   KEY_CODE_ENTER,
@@ -62,7 +66,8 @@ import { addScratchpadNote, addSqlBlockNote } from '@components/PipelineDetail/A
 import { addUnderscores, randomNameGenerator, removeExtensionFromFilename } from '@utils/string';
 import { getUpstreamBlockUuids } from '@components/CodeBlock/utils';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
-import { pauseEvent } from '@utils/events';
+import { onSuccess } from '@api/utils/response';
+import { pushAtIndex, removeAtIndex } from '@utils/array';
 import { selectKeys } from '@utils/hash';
 import { useKeyboardContext } from '@context/Keyboard';
 
@@ -76,6 +81,8 @@ type PipelineDetailProps = {
   addWidget: (widget: BlockType, opts?: {
     onCreateCallback?: (block: BlockType) => void;
   }) => Promise<any>;
+  allBlocks: BlockType[];
+  allowCodeBlockShortcuts?: boolean;
   anyInputFocused: boolean;
   autocompleteItems: AutocompleteItemType[];
   blockRefs: any;
@@ -88,9 +95,10 @@ type PipelineDetailProps = {
   fetchSampleData: () => void;
   files: FileType[];
   globalVariables: PipelineVariableType[];
+  hiddenBlocks: {
+    [uuid: string]: BlockType;
+  };
   interruptKernel: () => void;
-  isPipelineUpdating: boolean;
-  kernel: KernelType;
   mainContainerRef: any;
   mainContainerWidth: number;
   messages: {
@@ -98,10 +106,11 @@ type PipelineDetailProps = {
   };
   onChangeCallbackBlock: (type: string, uuid: string, value: string) => void;
   onChangeCodeBlock: (type: string, uuid: string, value: string) => void;
-  openSidekickView: (newView: ViewKeyEnum, pushHistory?: boolean) => void;
+  openSidekickView?: (newView: ViewKeyEnum, pushHistory?: boolean, opts?: {
+    blockUUID: string;
+  }) => void;
   pipeline: PipelineType;
   pipelineContentTouched: boolean;
-  pipelineLastSaved: Date;
   restartKernel: () => void;
   runBlock: (payload: {
     block: BlockType;
@@ -116,23 +125,29 @@ type PipelineDetailProps = {
   }) => Promise<any>;
   selectedBlock: BlockType;
   setAnyInputFocused: (value: boolean) => void;
+  setDisableShortcuts: (disableShortcuts: boolean) => void;
   setErrors: (errors: ErrorsType) => void;
   setIntegrationStreams: (streams: string[]) => void;
+  setHiddenBlocks: ((opts: {
+    [uuid: string]: BlockType;
+  }) => {
+    [uuid: string]: BlockType;
+  });
   setOutputBlocks: (func: (prevOutputBlocks: BlockType[]) => BlockType[]) => void;
   setPipelineContentTouched: (value: boolean) => void;
-  setRecsWindowOpenBlockIdx: (idx: number) => void;
-  setRunningBlocks: (blocks: BlockType[]) => void;
   setSelectedBlock: (block: BlockType) => void;
   setSelectedOutputBlock: (block: BlockType) => void;
   setSelectedStream: (stream: string) => void;
   setTextareaFocused: (value: boolean) => void;
   textareaFocused: boolean;
   widgets: BlockType[];
-} & SetEditingBlockType & SetMessagesType;
+} & SetEditingBlockType;
 
 function PipelineDetail({
   addNewBlockAtIndex,
   addWidget,
+  allBlocks,
+  allowCodeBlockShortcuts,
   anyInputFocused,
   autocompleteItems,
   blockRefs,
@@ -145,9 +160,8 @@ function PipelineDetail({
   fetchSampleData,
   files,
   globalVariables,
+  hiddenBlocks,
   interruptKernel,
-  isPipelineUpdating,
-  kernel,
   mainContainerRef,
   mainContainerWidth,
   messages,
@@ -156,21 +170,19 @@ function PipelineDetail({
   openSidekickView,
   pipeline,
   pipelineContentTouched,
-  pipelineLastSaved,
   restartKernel,
   runBlock,
   runningBlocks = [],
   savePipelineContent,
   selectedBlock,
   setAnyInputFocused,
+  setDisableShortcuts,
   setEditingBlock,
   setErrors,
   setIntegrationStreams,
-  setMessages,
+  setHiddenBlocks,
   setOutputBlocks,
   setPipelineContentTouched,
-  setRecsWindowOpenBlockIdx,
-  setRunningBlocks,
   setSelectedBlock,
   setSelectedOutputBlock,
   setSelectedStream,
@@ -205,6 +217,14 @@ function PipelineDetail({
 
   const isIntegration = useMemo(() => PipelineTypeEnum.INTEGRATION === pipeline?.type, [pipeline]);
   const isStreaming = useMemo(() => PipelineTypeEnum.STREAMING === pipeline?.type, [pipeline]);
+
+  const { data: dataBlockTemplates } = api.block_templates.list({}, {
+    revalidateOnFocus: false,
+  });
+  const blockTemplates: BlockTemplateType[] =
+    useMemo(() => dataBlockTemplates?.block_templates || [], [
+      dataBlockTemplates,
+    ]);
 
   const uuidKeyboard = 'PipelineDetail/index';
   const {
@@ -250,7 +270,6 @@ function PipelineDetail({
 
           if (keyMapping[KEY_CODE_ESCAPE]) {
             setSelectedBlock(null);
-            setRecsWindowOpenBlockIdx(null);
           } else if (keyHistory[0] === KEY_CODE_I
             && keyHistory[1] === KEY_CODE_I
           ) {
@@ -288,14 +307,6 @@ function PipelineDetail({
             }
           } else if (onlyKeysPresent([KEY_CODE_ENTER], keyMapping)) {
             setTextareaFocused(true);
-          } else if (!anyInputFocused && onlyKeysPresent([KEY_CODE_A], keyMapping)) {
-            addNewBlockAtIndex({
-              type: BlockTypeEnum.SCRATCHPAD,
-            }, selectedBlockIndex, setSelectedBlock);
-          } else if (!anyInputFocused && onlyKeysPresent([KEY_CODE_B], keyMapping)) {
-            addNewBlockAtIndex({
-              type: BlockTypeEnum.SCRATCHPAD,
-            }, selectedBlockIndex + 1, setSelectedBlock);
           }
         } else if (selectedBlockPrevious) {
           if (keyMapping[KEY_CODE_ENTER]) {
@@ -303,7 +314,7 @@ function PipelineDetail({
           }
         }
 
-        if (keyHistory[0] === KEY_CODE_NUMBER_0 && keyHistory[1] === KEY_CODE_NUMBER_0) {
+        if (!anyInputFocused && keyHistory[0] === KEY_CODE_NUMBER_0 && keyHistory[1] === KEY_CODE_NUMBER_0) {
           restartKernel();
         }
       }
@@ -333,7 +344,7 @@ function PipelineDetail({
       if (pipelineContentTouched) {
         savePipelineContent();
       }
-    }, 5000);
+    }, 1000 * 10);
 
     return () => {
       clearInterval(autoSaveInterval);
@@ -347,13 +358,43 @@ function PipelineDetail({
     setTimeout(() => setVisible(true), ANIMATION_DURATION * 2);
   }, [pipeline]);
 
-
+  const [updateBlock] = useMutation(
+    ({
+      block,
+      upstreamBlocks,
+    }: {
+      block: BlockType,
+      upstreamBlocks: string[];
+    }) => api.blocks.pipelines.useUpdate(
+      pipeline?.uuid,
+      block?.uuid,
+    )({
+      block: {
+        upstream_blocks: upstreamBlocks,
+      },
+    }),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            fetchPipeline();
+          },
+          onErrorCallback: (response, errors) => setErrors?.({
+            errors,
+            response,
+          }),
+        },
+      ),
+    },
+  );
 
   const onClickAddSingleDBTModel = useCallback((blockIndex: number) => {
     setAddDBTModelVisible(true);
     setLastBlockIndex(blockIndex);
+    setDisableShortcuts(true);
   }, [
     setAddDBTModelVisible,
+    setDisableShortcuts,
     setLastBlockIndex,
   ]);
 
@@ -361,12 +402,47 @@ function PipelineDetail({
     setAddDBTModelVisible(false);
     setCreatingNewDBTModel(false);
     setDbtModelName('');
-  }, []);
+    setDisableShortcuts(false);
+  }, [setDisableShortcuts]);
 
-  const codeBlocks = useMemo(
-    () => blocks
-    .filter(({ type }) => !isIntegration || BlockTypeEnum.TRANSFORMER === type)
-    .map((block: BlockType, idx: number) => {
+  const onDrop = useCallback((block: BlockType, blockDropped: BlockType) => {
+    let blockIndex;
+    let blockDroppedIndex;
+
+    blocks.forEach(({ uuid }, idx: number) => {
+      if (blockIndex >= 0 && blockDroppedIndex >= 0) {
+        return;
+      }
+
+      if (uuid === block.uuid) {
+        blockIndex = idx;
+      } else if (uuid === blockDropped.uuid) {
+        blockDroppedIndex = idx;
+      }
+    });
+
+    let arr = removeAtIndex(blocks, blockDroppedIndex);
+    arr = pushAtIndex(blockDropped, Math.max(blockIndex, 0), arr);
+
+    return savePipelineContent({
+      pipeline: {
+        blocks: arr,
+        uuid: pipeline?.uuid,
+      },
+    });
+  }, [
+    blocks,
+    pipeline,
+    savePipelineContent,
+  ]);
+
+  const codeBlocks = useMemo(() => {
+    const arr = [];
+
+    const blocksFiltered =
+      blocks.filter(({ type }) => !isIntegration || BlockTypeEnum.TRANSFORMER === type);
+
+    blocksFiltered.forEach((block: BlockType, idx: number) => {
       const {
         type,
         uuid,
@@ -383,73 +459,127 @@ function PipelineDetail({
       const path = `${type}s/${uuid}.py`;
       blockRefs.current[path] = createRef();
 
-      return (
-        <CodeBlock
-          addNewBlock={(b: BlockRequestPayloadType) => {
-            setTextareaFocused(true);
+      let el;
+      const isMarkdown = type === BlockTypeEnum.MARKDOWN;
+      const isTransformer = type === BlockTypeEnum.TRANSFORMER;
+      const isHidden = !!hiddenBlocks?.[uuid];
+      const noDivider = idx === numberOfBlocks - 1 || isIntegration;
+      const currentBlockRef = blockRefs.current[path];
 
-            return addNewBlockAtIndex(b, idx + 1, setSelectedBlock);
-          }}
-          addNewBlockMenuOpenIdx={addNewBlockMenuOpenIdx}
-          addWidget={addWidget}
-          autocompleteItems={autocompleteItems}
-          block={block}
-          blockIdx={idx}
-          blockRefs={blockRefs}
-          blocks={blocks}
-          dataProviders={dataProviders}
-          defaultValue={block.content}
-          deleteBlock={(b: BlockType) => {
-            deleteBlock(b);
-            setAnyInputFocused(false);
-          }}
-          executionState={executionState}
-          fetchFileTree={fetchFileTree}
-          fetchPipeline={fetchPipeline}
-          hideRunButton={isStreaming}
-          interruptKernel={interruptKernel}
-          key={uuid}
-          mainContainerRef={mainContainerRef}
-          mainContainerWidth={mainContainerWidth}
-          messages={messages[uuid]}
-          noDivider={idx === numberOfBlocks - 1 || isIntegration}
-          onCallbackChange={(value: string) => onChangeCallbackBlock(type, uuid, value)}
-          onChange={(value: string) => onChangeCodeBlock(type, uuid, value)}
-          onClickAddSingleDBTModel={onClickAddSingleDBTModel}
-          openSidekickView={openSidekickView}
-          pipeline={pipeline}
-          ref={blockRefs.current[path]}
-          runBlock={runBlock}
-          runningBlocks={runningBlocks}
-          savePipelineContent={savePipelineContent}
-          selected={selected}
-          setAddNewBlockMenuOpenIdx={setAddNewBlockMenuOpenIdx}
-          setAnyInputFocused={setAnyInputFocused}
-          setCreatingNewDBTModel={setCreatingNewDBTModel}
-          setEditingBlock={setEditingBlock}
-          setErrors={setErrors}
-          setOutputBlocks={setOutputBlocks}
-          setRecsWindowOpenBlockIdx={setRecsWindowOpenBlockIdx}
-          setSelected={(value: boolean) => setSelectedBlock(value === true ? block : null)}
-          setSelectedOutputBlock={setSelectedOutputBlock}
-          setTextareaFocused={setTextareaFocused}
-          textareaFocused={selected && textareaFocused}
-          widgets={widgets}
-        />
-      );
-    },
-  ),
+      if (isHidden) {
+        el = (
+          <HiddenBlock
+            block={block}
+            blocks={blocks}
+            key={uuid}
+            // @ts-ignore
+            onClick={() => setHiddenBlocks(prev => ({
+              ...prev,
+              [uuid]: !isHidden,
+            }))}
+            onDrop={onDrop}
+            ref={currentBlockRef}
+          />
+        );
+      } else {
+        el = (
+          <CodeBlock
+            addNewBlock={(
+              b: BlockRequestPayloadType,
+              downstreamBlocks?: string[],
+            ) => {
+              setTextareaFocused(true);
+              const onCreateCallback = (block: BlockType) => {
+                if (downstreamBlocks?.length === 1) {
+                  const downstreamBlockUUID = downstreamBlocks[0];
+                  updateBlock({
+                    block: { uuid: downstreamBlockUUID },
+                    upstreamBlocks: [block.uuid],
+                  });
+                }
+                setSelectedBlock?.(block);
+              };
+
+              return addNewBlockAtIndex(
+                b,
+                idx + 1,
+                onCreateCallback,
+              );
+            }}
+            addNewBlockMenuOpenIdx={addNewBlockMenuOpenIdx}
+            addWidget={addWidget}
+            allBlocks={allBlocks}
+            allowCodeBlockShortcuts={allowCodeBlockShortcuts}
+            autocompleteItems={autocompleteItems}
+            block={block}
+            blockIdx={idx}
+            blockRefs={blockRefs}
+            blockTemplates={blockTemplates}
+            blocks={blocks}
+            dataProviders={dataProviders}
+            defaultValue={block.content}
+            deleteBlock={(b: BlockType) => {
+              deleteBlock(b);
+              setAnyInputFocused(false);
+            }}
+            disableShortcuts={disableShortcuts}
+            executionState={executionState}
+            fetchFileTree={fetchFileTree}
+            fetchPipeline={fetchPipeline}
+            hideRunButton={isStreaming || isMarkdown || (isIntegration && isTransformer)}
+            interruptKernel={interruptKernel}
+            key={uuid}
+            mainContainerRef={mainContainerRef}
+            mainContainerWidth={mainContainerWidth}
+            messages={messages[uuid]}
+            noDivider={noDivider}
+            onCallbackChange={(value: string) => onChangeCallbackBlock(type, uuid, value)}
+            onChange={(value: string) => onChangeCodeBlock(type, uuid, value)}
+            onClickAddSingleDBTModel={onClickAddSingleDBTModel}
+            onDrop={onDrop}
+            openSidekickView={openSidekickView}
+            pipeline={pipeline}
+            ref={currentBlockRef}
+            runBlock={runBlock}
+            runningBlocks={runningBlocks}
+            savePipelineContent={savePipelineContent}
+            selected={selected}
+            setAddNewBlockMenuOpenIdx={setAddNewBlockMenuOpenIdx}
+            setAnyInputFocused={setAnyInputFocused}
+            setCreatingNewDBTModel={setCreatingNewDBTModel}
+            setEditingBlock={setEditingBlock}
+            setErrors={setErrors}
+            setOutputBlocks={setOutputBlocks}
+            setSelected={(value: boolean) => setSelectedBlock(value === true ? block : null)}
+            setSelectedOutputBlock={setSelectedOutputBlock}
+            setTextareaFocused={setTextareaFocused}
+            textareaFocused={selected && textareaFocused}
+            widgets={widgets}
+          />
+        );
+      }
+
+      arr.push(el);
+    });
+
+    return arr;
+  },
   [
     addNewBlockAtIndex,
     addNewBlockMenuOpenIdx,
     addWidget,
+    allBlocks,
+    allowCodeBlockShortcuts,
     autocompleteItems,
     blockRefs,
+    blockTemplates,
     blocks,
     dataProviders,
     deleteBlock,
+    disableShortcuts,
     fetchFileTree,
     fetchPipeline,
+    hiddenBlocks,
     interruptKernel,
     isIntegration,
     isStreaming,
@@ -460,6 +590,7 @@ function PipelineDetail({
     onChangeCallbackBlock,
     onChangeCodeBlock,
     onClickAddSingleDBTModel,
+    onDrop,
     openSidekickView,
     pipeline,
     runBlock,
@@ -471,12 +602,13 @@ function PipelineDetail({
     setAnyInputFocused,
     setEditingBlock,
     setErrors,
+    setHiddenBlocks,
     setOutputBlocks,
-    setRecsWindowOpenBlockIdx,
     setSelectedBlock,
     setSelectedOutputBlock,
     setTextareaFocused,
     textareaFocused,
+    updateBlock,
     widgets,
   ]);
 
@@ -567,33 +699,32 @@ df = get_variable('${pipeline.uuid}', '${block.uuid}', 'output_0')
         }, numberOfBlocks, setSelectedBlock);
         setTextareaFocused(true);
       }}
+      blockTemplates={blockTemplates}
       hideCustom={isIntegration || isStreaming}
       hideDataExporter={isIntegration}
       hideDataLoader={isIntegration}
       hideDbt={isIntegration || isStreaming}
-      hideRecommendations={isIntegration}
       hideScratchpad={isIntegration}
       hideSensor={isIntegration}
       onClickAddSingleDBTModel={onClickAddSingleDBTModel}
       pipeline={pipeline}
       setCreatingNewDBTModel={setCreatingNewDBTModel}
-      setRecsWindowOpenBlockIdx={setRecsWindowOpenBlockIdx}
     />
   ), [
     addNewBlockAtIndex,
+    blockTemplates,
     blocks,
     isIntegration,
     isStreaming,
     numberOfBlocks,
     onClickAddSingleDBTModel,
     pipeline,
-    setRecsWindowOpenBlockIdx,
     setSelectedBlock,
     setTextareaFocused,
   ]);
 
   return (
-    <>
+    <DndProvider backend={HTML5Backend}>
       <PipelineContainerStyle>
         {visibleOverlay && (
           <CSSTransition
@@ -631,13 +762,20 @@ df = get_variable('${pipeline.uuid}', '${block.uuid}', 'output_0')
               files={files}
               onClose={closeAddDBTModelPopup}
               onOpenFile={(filePath: string) => {
-                const finalFilePath = creatingNewDBTModel
-                  ? `${filePath}/${addUnderscores(dbtModelName || randomNameGenerator())}.${FileExtensionEnum.SQL}`
-                  : filePath;
+                let finalFilePath = filePath;
+                if (creatingNewDBTModel) {
+                  let blockName = addUnderscores(dbtModelName || randomNameGenerator());
+                  const sqlExtension = `.${FileExtensionEnum.SQL}`;
+                  if (blockName.endsWith(sqlExtension)) {
+                    blockName = blockName.slice(0, -4);
+                  }
+                  finalFilePath = `${filePath}${path.sep}${blockName}.${FileExtensionEnum.SQL}`;
+                }
 
                 const newBlock: BlockRequestPayloadType = {
                   configuration: {
                     file_path: finalFilePath,
+                    limit: DEFAULT_SQL_CONFIG_KEY_LIMIT,
                   },
                   language: BlockLanguageEnum.SQL,
                   name: removeExtensionFromFilename(finalFilePath),
@@ -666,7 +804,7 @@ df = get_variable('${pipeline.uuid}', '${block.uuid}', 'output_0')
           </ClickOutside>
         )}
       </Spacing>
-    </>
+    </DndProvider>
   );
 }
 

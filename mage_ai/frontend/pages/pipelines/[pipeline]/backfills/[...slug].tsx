@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 import BackfillDetail from '@components/Backfills/Detail';
 import BackfillEdit from '@components/Backfills/Edit';
+import ErrorsType from '@interfaces/ErrorsType';
 import PrivateRoute from '@components/shared/PrivateRoute';
 import api from '@api';
 
@@ -16,9 +17,13 @@ function BackfillDetailPage({
   pipelineUUID,
   subpath,
 }: BackfillDetailPageProps) {
+  const [errors, setErrors] = useState<ErrorsType>(null);
+
   const {
     data: dataGlobalVariables,
-  } = api.variables.pipelines.list(pipelineUUID);
+  } = api.variables.pipelines.list(pipelineUUID, {}, {
+    revalidateOnFocus: false,
+  });
   const globalVariables = useMemo(() => dataGlobalVariables?.variables, [dataGlobalVariables]);
 
   const { data: dataPipeline } = api.pipelines.detail(pipelineUUID, {
@@ -39,8 +44,10 @@ function BackfillDetailPage({
     return (
       <BackfillEdit
         backfill={model}
+        errors={errors}
         fetchBackfill={mutate}
         pipeline={pipeline}
+        setErrors={setErrors}
         variables={globalVariables}
       />
     );
@@ -49,8 +56,10 @@ function BackfillDetailPage({
   return (
     <BackfillDetail
       backfill={model}
+      errors={errors}
       fetchBackfill={mutate}
       pipeline={pipeline}
+      setErrors={setErrors}
       variables={globalVariables}
     />
   );

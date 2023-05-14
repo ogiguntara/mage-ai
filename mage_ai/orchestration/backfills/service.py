@@ -1,4 +1,9 @@
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+from mage_ai.data_preparation.models.triggers import (
+    ScheduleInterval,
+    ScheduleStatus,
+)
 from mage_ai.orchestration.db.models.schedules import Backfill, PipelineRun, PipelineSchedule
 from mage_ai.shared.hash import merge_dict
 from typing import Dict, List
@@ -19,7 +24,7 @@ def start_backfill(backfill: Backfill) -> List[PipelineRun]:
         pipeline_schedule = PipelineSchedule.create(
             name=f'Backfill {backfill.name}',
             pipeline_uuid=backfill.pipeline_uuid,
-            schedule_interval=PipelineSchedule.ScheduleInterval.ONCE,
+            schedule_interval=ScheduleInterval.ONCE,
             start_time=datetime.utcnow(),
             variables=backfill_variables,
         )
@@ -39,7 +44,7 @@ def start_backfill(backfill: Backfill) -> List[PipelineRun]:
         pipeline_runs.append(pipeline_run)
 
     backfill.update(pipeline_schedule_id=pipeline_schedule.id)
-    pipeline_schedule.update(status=PipelineSchedule.ScheduleStatus.ACTIVE)
+    pipeline_schedule.update(status=ScheduleStatus.ACTIVE)
 
     return pipeline_runs
 
@@ -62,7 +67,7 @@ def cancel_backfill(backfill: Backfill) -> None:
         pipeline_run.update(status=PipelineRun.PipelineRunStatus.CANCELLED)
 
     backfill.update(status=Backfill.Status.CANCELLED)
-    backfill.pipeline_schedule.update(status=PipelineSchedule.ScheduleStatus.INACTIVE)
+    backfill.pipeline_schedule.update(status=ScheduleStatus.INACTIVE)
 
 
 def __build_variables_list(backfill: Backfill) -> List[Dict]:
@@ -94,15 +99,16 @@ def __build_dates(backfill: Backfill) -> List[datetime]:
                 unit = 'seconds'
             current_datetime += timedelta(**{unit: backfill.interval_units})
         else:
-            month = 1 if Backfill.IntervalType.MONTH == interval_type else 0
-            year = 1 if Backfill.IntervalType.YEAR == interval_type else 0
-            current_datetime = datetime(
-                current_datetime.year + year,
-                current_datetime.month + month,
-                current_datetime.day,
-                current_datetime.hour,
-                current_datetime.minute,
-                current_datetime.second,
-            ).replace(tzinfo=current_datetime.tzinfo)
+            key = None
+            if Backfill.IntervalType.MONTH == interval_type:
+                key = 'months'
+            elif Backfill.IntervalType.YEAR == interval_type:
+                key = 'years'
+
+            delta = {
+                key: backfill.interval_units,
+            }
+            current_datetime = current_datetime + relativedelta(**delta)
+            current_datetime = current_datetime.replace(tzinfo=current_datetime.tzinfo)
 
     return dates

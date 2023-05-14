@@ -4,6 +4,7 @@ import Button from '@oracle/elements/Button';
 import FlexContainer from '@oracle/components/FlexContainer';
 import GradientButton from '@oracle/elements/Button/GradientButton';
 import Spacing from '@oracle/elements/Spacing';
+import Text from '@oracle/elements/Text';
 import { PURPLE_BLUE } from '@oracle/styles/colors/gradients';
 import { TabsContainerStyle } from './index.style';
 import { UNIT } from '@oracle/styles/units/spacing';
@@ -61,7 +62,14 @@ function ButtonTabs({
             </>
           )}
 
-          {displayText}
+          <Text
+            bold
+            default={!selected}
+            noWrapping
+            small
+          >
+            {displayText}
+          </Text>
         </FlexContainer>
       );
 
@@ -96,12 +104,11 @@ function ButtonTabs({
         );
       } else {
         arr.push(
-          <div style={{ padding: 4 }}>
+          <div key={`button-tab-${uuid}`} style={{ padding: 2 }}>
             <Button
               borderLess
               compact={small}
               default
-              key={`button-tab-${uuid}`}
               onClick={(e) => {
                 pauseEvent(e);
                 onClickTab(tab);
@@ -120,6 +127,7 @@ function ButtonTabs({
   }, [
     onClickTab,
     selectedTabUUID,
+    small,
     tabs,
   ]);
 

@@ -1,12 +1,14 @@
+import os
 from abc import ABC, abstractmethod
 from enum import Enum
-from jinja2 import Template
-from mage_ai.data_preparation.shared.constants import REPO_PATH_ENV_VAR
-from mage_ai.data_preparation.shared.utils import get_template_vars
 from pathlib import Path
 from typing import Any, Dict, Union
-import os
+
 import yaml
+from jinja2 import Template
+
+from mage_ai.data_preparation.shared.constants import REPO_PATH_ENV_VAR
+from mage_ai.data_preparation.shared.utils import get_template_vars
 
 
 class ConfigKey(str, Enum):
@@ -18,12 +20,37 @@ class ConfigKey(str, Enum):
     AWS_REGION = 'AWS_REGION'
     AWS_SECRET_ACCESS_KEY = 'AWS_SECRET_ACCESS_KEY'
     AWS_SESSION_TOKEN = 'AWS_SESSION_TOKEN'
+
     AZURE_CLIENT_ID = 'AZURE_CLIENT_ID'
     AZURE_CLIENT_SECRET = 'AZURE_CLIENT_SECRET'
     AZURE_STORAGE_ACCOUNT_NAME = 'AZURE_STORAGE_ACCOUNT_NAME'
     AZURE_TENANT_ID = 'AZURE_TENANT_ID'
+
+    CLICKHOUSE_DATABASE = 'CLICKHOUSE_DATABASE'
+    CLICKHOUSE_HOST = 'CLICKHOUSE_HOST'
+    CLICKHOUSE_INTERFACE = 'CLICKHOUSE_INTERFACE'
+    CLICKHOUSE_PASSWORD = 'CLICKHOUSE_PASSWORD'
+    CLICKHOUSE_PORT = 'CLICKHOUSE_PORT'
+    CLICKHOUSE_USERNAME = 'CLICKHOUSE_USERNAME'
+
+    DRUID_HOST = 'DRUID_HOST'
+    DRUID_PASSWORD = 'DRUID_PASSWORD'
+    DRUID_PATH = 'DRUID_PATH'
+    DRUID_PORT = 'DRUID_PORT'
+    DRUID_SCHEME = 'DRUID_SCHEME'
+    DRUID_USER = 'DRUID_USER'
+
+    GOOGLE_LOCATION = 'GOOGLE_LOCATION'
     GOOGLE_SERVICE_ACC_KEY = 'GOOGLE_SERVICE_ACC_KEY'
     GOOGLE_SERVICE_ACC_KEY_FILEPATH = 'GOOGLE_SERVICE_ACC_KEY_FILEPATH'
+
+    MONGODB_COLLECTION = 'MONGODB_COLLECTION'
+    MONGODB_DATABASE = 'MONGODB_DATABASE'
+    MONGODB_HOST = 'MONGODB_HOST'
+    MONGODB_PASSWORD = 'MONGODB_PASSWORD'
+    MONGODB_PORT = 'MONGODB_PORT'
+    MONGODB_USER = 'MONGODB_USER'
+
     MSSQL_DATABASE = 'MSSQL_DATABASE'
     MSSQL_DRIVER = 'MSSQL_DRIVER'
     MSSQL_HOST = 'MSSQL_HOST'
@@ -31,31 +58,38 @@ class ConfigKey(str, Enum):
     MSSQL_PORT = 'MSSQL_PORT'
     MSSQL_SCHEMA = 'MSSQL_SCHEMA'
     MSSQL_USER = 'MSSQL_USER'
+
     MYSQL_CONNECTION_METHOD = 'MYSQL_CONNECTION_METHOD'
     MYSQL_DATABASE = 'MYSQL_DATABASE'
     MYSQL_HOST = 'MYSQL_HOST'
     MYSQL_PASSWORD = 'MYSQL_PASSWORD'
     MYSQL_PORT = 'MYSQL_PORT'
     MYSQL_USER = 'MYSQL_USER'
+
     POSTGRES_CONNECTION_METHOD = 'POSTGRES_CONNECTION_METHOD'
+    POSTGRES_CONNECT_TIMEOUT = 'POSTGRES_CONNECT_TIMEOUT'
     POSTGRES_DBNAME = 'POSTGRES_DBNAME'
     POSTGRES_HOST = 'POSTGRES_HOST'
     POSTGRES_PASSWORD = 'POSTGRES_PASSWORD'
     POSTGRES_PORT = 'POSTGRES_PORT'
+    POSTGRES_SCHEMA = 'POSTGRES_SCHEMA'
     POSTGRES_SSH_HOST = 'POSTGRES_SSH_HOST'
     POSTGRES_SSH_PASSWORD = 'POSTGRES_SSH_PASSWORD'
     POSTGRES_SSH_PKEY = 'POSTGRES_SSH_PKEY'
     POSTGRES_SSH_PORT = 'POSTGRES_SSH_PORT'
     POSTGRES_SSH_USERNAME = 'POSTGRES_SSH_USERNAME'
     POSTGRES_USER = 'POSTGRES_USER'
+
     REDSHIFT_CLUSTER_ID = 'REDSHIFT_CLUSTER_ID'
     REDSHIFT_DBNAME = 'REDSHIFT_DBNAME'
     REDSHIFT_DBUSER = 'REDSHIFT_DBUSER'
     REDSHIFT_HOST = 'REDSHIFT_HOST'
     REDSHIFT_IAM_PROFILE = 'REDSHIFT_IAM_PROFILE'
     REDSHIFT_PORT = 'REDSHIFT_PORT'
+    REDSHIFT_SCHEMA = 'REDSHIFT_SCHEMA'
     REDSHIFT_TEMP_CRED_PASSWORD = 'REDSHIFT_TEMP_CRED_PASSWORD'
     REDSHIFT_TEMP_CRED_USER = 'REDSHIFT_TEMP_CRED_USER'
+
     SNOWFLAKE_ACCOUNT = 'SNOWFLAKE_ACCOUNT'
     SNOWFLAKE_DEFAULT_DB = 'SNOWFLAKE_DEFAULT_DB'
     SNOWFLAKE_DEFAULT_SCHEMA = 'SNOWFLAKE_DEFAULT_SCHEMA'
@@ -64,7 +98,9 @@ class ConfigKey(str, Enum):
     SNOWFLAKE_PRIVATE_KEY_PASSPHRASE = 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE'
     SNOWFLAKE_PRIVATE_KEY_PATH = 'SNOWFLAKE_PRIVATE_KEY_PATH'
     SNOWFLAKE_ROLE = 'SNOWFLAKE_ROLE'
+    SNOWFLAKE_TIMEOUT = 'SNOWFLAKE_TIMEOUT'
     SNOWFLAKE_USER = 'SNOWFLAKE_USER'
+
     TRINO_CATALOG = 'TRINO_CATALOG'
     TRINO_HOST = 'TRINO_HOST'
     TRINO_PASSWORD = 'TRINO_PASSWORD'
@@ -113,7 +149,7 @@ class BaseConfigLoader(ABC):
 
 
 class AWSSecretLoader(BaseConfigLoader):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         import boto3
 
         self.client = boto3.client('secretsmanager', **kwargs)
@@ -257,6 +293,8 @@ class VerboseConfigKey(str, Enum):
 
     AWS = 'AWS'
     BIGQUERY = 'BigQuery'
+    CLICKHOUSE = 'ClickHouse'
+    DRUID = 'Druid'
     POSTGRES = 'PostgreSQL'
     REDSHIFT = 'Redshift'
     SNOWFLAKE = 'Snowflake'
@@ -268,6 +306,7 @@ class ConfigFileLoader(BaseConfigLoader):
         ConfigKey.AWS_REGION: (VerboseConfigKey.AWS, 'region'),
         ConfigKey.AWS_SECRET_ACCESS_KEY: (VerboseConfigKey.AWS, 'secret_access_key'),
         ConfigKey.AWS_SESSION_TOKEN: (VerboseConfigKey.AWS, 'session_token'),
+        ConfigKey.GOOGLE_LOCATION: (VerboseConfigKey.BIGQUERY, 'location'),
         ConfigKey.GOOGLE_SERVICE_ACC_KEY: (VerboseConfigKey.BIGQUERY, 'credentials_mapping'),
         ConfigKey.GOOGLE_SERVICE_ACC_KEY_FILEPATH: (
             VerboseConfigKey.BIGQUERY,
@@ -287,6 +326,7 @@ class ConfigFileLoader(BaseConfigLoader):
             'profile',
         ),
         ConfigKey.REDSHIFT_PORT: (VerboseConfigKey.AWS, VerboseConfigKey.REDSHIFT, 'port'),
+        ConfigKey.REDSHIFT_SCHEMA: (VerboseConfigKey.AWS, VerboseConfigKey.REDSHIFT, 'schema'),
         ConfigKey.REDSHIFT_TEMP_CRED_PASSWORD: (
             VerboseConfigKey.AWS,
             VerboseConfigKey.REDSHIFT,
@@ -297,16 +337,36 @@ class ConfigFileLoader(BaseConfigLoader):
             VerboseConfigKey.REDSHIFT,
             'user',
         ),
+        ConfigKey.CLICKHOUSE_DATABASE: (
+            VerboseConfigKey.CLICKHOUSE, 'database'),
+        ConfigKey.CLICKHOUSE_HOST: (
+            VerboseConfigKey.CLICKHOUSE, 'host'),
+        ConfigKey.CLICKHOUSE_INTERFACE: (
+            VerboseConfigKey.CLICKHOUSE, 'interface'),
+        ConfigKey.CLICKHOUSE_PASSWORD: (
+            VerboseConfigKey.CLICKHOUSE, 'password'),
+        ConfigKey.CLICKHOUSE_PORT: (
+            VerboseConfigKey.CLICKHOUSE, 'port'),
+        ConfigKey.CLICKHOUSE_USERNAME: (
+            VerboseConfigKey.CLICKHOUSE, 'username'),
+        ConfigKey.DRUID_HOST: (VerboseConfigKey.DRUID, 'host'),
+        ConfigKey.DRUID_PASSWORD: (VerboseConfigKey.DRUID, 'password'),
+        ConfigKey.DRUID_PATH: (VerboseConfigKey.DRUID, 'path'),
+        ConfigKey.DRUID_PORT: (VerboseConfigKey.DRUID, 'port'),
+        ConfigKey.DRUID_SCHEME: (VerboseConfigKey.DRUID, 'scheme'),
+        ConfigKey.DRUID_USER: (VerboseConfigKey.DRUID, 'user'),
         ConfigKey.POSTGRES_DBNAME: (VerboseConfigKey.POSTGRES, 'database'),
         ConfigKey.POSTGRES_HOST: (VerboseConfigKey.POSTGRES, 'host'),
         ConfigKey.POSTGRES_PASSWORD: (VerboseConfigKey.POSTGRES, 'password'),
         ConfigKey.POSTGRES_PORT: (VerboseConfigKey.POSTGRES, 'port'),
+        ConfigKey.POSTGRES_SCHEMA: (VerboseConfigKey.POSTGRES, 'schema'),
         ConfigKey.POSTGRES_USER: (VerboseConfigKey.POSTGRES, 'user'),
         ConfigKey.SNOWFLAKE_ACCOUNT: (VerboseConfigKey.SNOWFLAKE, 'account'),
         ConfigKey.SNOWFLAKE_DEFAULT_DB: (VerboseConfigKey.SNOWFLAKE, 'database'),
         ConfigKey.SNOWFLAKE_DEFAULT_SCHEMA: (VerboseConfigKey.SNOWFLAKE, 'schema'),
         ConfigKey.SNOWFLAKE_DEFAULT_WH: (VerboseConfigKey.SNOWFLAKE, 'warehouse'),
         ConfigKey.SNOWFLAKE_PASSWORD: (VerboseConfigKey.SNOWFLAKE, 'password'),
+        ConfigKey.SNOWFLAKE_TIMEOUT: (VerboseConfigKey.SNOWFLAKE, 'timeout'),
         ConfigKey.SNOWFLAKE_USER: (VerboseConfigKey.SNOWFLAKE, 'user'),
     }
 
@@ -330,6 +390,8 @@ class ConfigFileLoader(BaseConfigLoader):
             profile (str, optional): Profile to load configuration settings from. Defaults to
                                         'default'.
         """
+        self.version = None
+
         if config:
             self.config = config
         else:
@@ -341,7 +403,9 @@ class ConfigFileLoader(BaseConfigLoader):
                 config_file = Template(fin.read()).render(
                     **get_template_vars(),
                 )
-                self.config = yaml.full_load(config_file)[profile]
+                config = yaml.full_load(config_file)
+                self.config = config[profile]
+                self.version = config.get('version')
 
         self.use_verbose_format = any(
             source in self.config.keys() for source in VerboseConfigKey)

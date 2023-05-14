@@ -5,6 +5,7 @@ from mage_ai.authentication.passwords import create_bcrypt_hash, generate_salt, 
 from mage_ai.orchestration.db import safe_db_query
 from mage_ai.orchestration.db.models.oauth import User
 from mage_ai.shared.hash import extract, ignore_keys
+from mage_ai.usage_statistics.logger import UsageStatisticLogger
 
 
 class UserResource(DatabaseResource):
@@ -16,7 +17,22 @@ class UserResource(DatabaseResource):
 
     @classmethod
     @safe_db_query
-    def create(self, payload, user, **kwargs):
+    def collection(self, query_arg, meta, user, **kwargs):
+        results = (
+            User.
+            query.
+            order_by(User.username.asc())
+        )
+
+        if user.is_admin:
+            results = results \
+                .filter(User.owner == False).filter(User.roles > 1)     # noqa: E712
+
+        return results
+
+    @classmethod
+    @safe_db_query
+    async def create(self, payload, user, **kwargs):
         email = payload.get('email')
         password = payload.get('password')
         password_confirmation = payload.get('password_confirmation')
@@ -78,19 +94,38 @@ class UserResource(DatabaseResource):
                 resource.model, kwargs['oauth_client'])
             resource.model_options['oauth_token'] = oauth_token
 
+        async def _create_callback(resource):
+            await UsageStatisticLogger().users_impression()
+
+        self.on_create_callback = _create_callback
+
         return resource
 
     @safe_db_query
     def update(self, payload, **kwargs):
-        password = payload.get('password')
+        error = ApiError.RESOURCE_INVALID.copy()
 
+        if self.current_user.is_admin:
+            if self.owner:
+                error.update(
+                    {'message': 'Admins cannot update users who are Owners.'})
+                raise ApiError(error)
+            elif self.is_admin and self.current_user.id != self.id:
+                error.update(
+                    {'message': 'Admins cannot update users who are Admins.'})
+                raise ApiError(error)
+            elif payload.get('roles') and int(payload.get('roles')) & 1 != 0:
+                error.update(
+                    {'message': 'Admins cannot make other users Admins.'})
+                raise ApiError(error)
+
+        password = payload.get('password')
         if password:
             password_current = payload.get('password_current')
             password_confirmation = payload.get('password_confirmation')
 
-            error = ApiError.RESOURCE_INVALID.copy()
-
-            if self.current_user.id == self.id or not self.current_user.owner:
+            if self.current_user.id == self.id or \
+                    (not self.current_user.owner and self.current_user.roles & 1 == 0):
                 if not password_current or not verify_password(
                     password_current,
                     self.password_hash,

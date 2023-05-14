@@ -26,7 +26,7 @@ import { queryFromUrl } from '@utils/url';
 
 function UsersListPage() {
   const router = useRouter();
-  const { id: currentUserID } = getUser() || {};
+  const { id: currentUserID, owner: isOwner } = getUser() || {};
   const [query, setQuery] = useState<{
     add_new_user: boolean;
     user_id: number;
@@ -35,7 +35,10 @@ function UsersListPage() {
   const { data, mutate: fetchUsers } = api.users.list({}, {
     revalidateOnFocus: false,
   });
-  const users = useMemo(() => data?.users || [], [data]);
+  const users = useMemo(
+    () => data?.users || [],
+    [data?.users],
+  );
   const { data: dataUser, mutate: fetchUser } = api.users.detail(query?.user_id, {}, {
     revalidateOnFocus: false,
   });
@@ -103,6 +106,10 @@ function UsersListPage() {
               fetchUsers();
             }}
             onSaveSuccess={() => {
+              goToWithQuery({
+                add_new_user: null,
+                user_id: null,
+              });
               fetchUser();
               fetchUsers();
             }}
@@ -129,18 +136,20 @@ function UsersListPage() {
       uuidItemSelected={SECTION_ITEM_UUID_USERS}
       uuidWorkspaceSelected={SECTION_UUID_WORKSPACE}
     >
-      <Spacing p={PADDING_UNITS}>
-        <Button
-          beforeIcon={<Add />}
-          onClick={() => goToWithQuery({
-            add_new_user: 1,
-            user_id: null,
-          })}
-          primary
-        >
-          Add new user
-        </Button>
-      </Spacing>
+      {isOwner &&
+        <Spacing p={PADDING_UNITS}>
+          <Button
+            beforeIcon={<Add />}
+            onClick={() => goToWithQuery({
+              add_new_user: 1,
+              user_id: null,
+            })}
+            primary
+          >
+            Add new user
+          </Button>
+        </Spacing>
+      }
 
       <Spacing p={PADDING_UNITS}>
         <Headline>
@@ -166,6 +175,10 @@ function UsersListPage() {
 
           if (rowUserID === currentUserID) {
             router.push('/settings/account/profile');
+          } else if (+query?.user_id === rowUserID) {
+            goToWithQuery({
+              user_id: null,
+            });
           } else {
             goToWithQuery({
               add_new_user: null,

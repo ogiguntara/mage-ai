@@ -7,7 +7,6 @@ from pandas import DataFrame
 from snowflake.connector import connect
 from snowflake.connector.pandas_tools import write_pandas
 from typing import Dict, List, Union
-import pandas as pd
 
 
 DEFAULT_LOGIN_TIMEOUT = 20
@@ -42,6 +41,16 @@ class Snowflake(BaseSQLConnection):
             kwargs.pop('verbose')
         super().__init__(verbose=kwargs.get('verbose', True), **kwargs)
 
+    def default_database(self) -> str:
+        return self.settings.get('database')
+
+    def default_schema(self) -> str:
+        return self.settings.get('schema')
+
+    @property
+    def timeout(self) -> int:
+        return self.settings.get('timeout')
+
     def open(self) -> None:
         """
         Opens a connection to Snowflake.
@@ -60,7 +69,7 @@ class Snowflake(BaseSQLConnection):
         with self.printer.print_msg(f'Executing query \'{query_string}\''):
             query_string = self._clean_query(query_string)
             with self.conn.cursor() as cur:
-                return cur.execute(query_string, **kwargs).fetchall()
+                return cur.execute(query_string, timeout=self.timeout, **kwargs).fetchall()
 
     def execute_queries(
         self,
@@ -68,7 +77,7 @@ class Snowflake(BaseSQLConnection):
         query_variables: List[Dict] = None,
         fetch_query_at_indexes: List[bool] = None,
         **kwargs,
-    ):
+    ) -> List:
         results = []
 
         with self.conn.cursor() as cursor:
@@ -81,7 +90,7 @@ class Snowflake(BaseSQLConnection):
                 if fetch_query_at_indexes and idx < len(fetch_query_at_indexes) and \
                         fetch_query_at_indexes[idx]:
 
-                    rows = cursor.execute(query, **variables).fetchall()
+                    rows = cursor.execute(query, timeout=self.timeout, **variables).fetchall()
 
                     full_table_name = fetch_query_at_indexes[idx]
 
@@ -94,9 +103,9 @@ class Snowflake(BaseSQLConnection):
                     elif len(rows) >= 1 and len(rows[0]) >= 1:
                         columns = [f'col_{i}' for i in range(len(rows[0]))]
 
-                    result = pd.DataFrame(rows, columns=columns)
+                    result = DataFrame(rows, columns=columns)
                 else:
-                    result = cursor.execute(query, **variables)
+                    result = cursor.execute(query, timeout=self.timeout, **variables)
 
                 results.append(result)
 
@@ -115,7 +124,10 @@ class Snowflake(BaseSQLConnection):
             full_table_name = f'"{database}"."{schema}"."{table_name}"'
 
         if full_table_name:
-            arr = cursor.execute(f'DESCRIBE TABLE {full_table_name}').fetchall()
+            arr = cursor.execute(
+                f'DESCRIBE TABLE {full_table_name}',
+                timeout=self.timeout,
+            ).fetchall()
             columns = [t[0] for t in arr]
 
         return columns
@@ -148,7 +160,6 @@ class Snowflake(BaseSQLConnection):
         Returns:
             DataFrame: Data frame associated with the given query.
         """
-
         print_message = 'Loading data'
         if verbose:
             print_message += ' with query'
@@ -174,13 +185,16 @@ class Snowflake(BaseSQLConnection):
                     )
 
                 results = cur.execute(
-                    self._enforce_limit(query_string, limit), *args, **kwargs
+                    self._enforce_limit(query_string, limit),
+                    *args,
+                    timeout=self.timeout,
+                    **kwargs,
                 ).fetchall()
 
                 if not columns and len(results) >= 1:
                     columns = [f'col{i}' for i in range(len(results[0]))]
 
-                return pd.DataFrame(results, columns=columns)
+                return DataFrame(results, columns=columns)
 
     def export(
         self,
@@ -211,17 +225,23 @@ class Snowflake(BaseSQLConnection):
         """
 
         if type(df) is dict:
-            df = pd.DataFrame([df])
+            df = DataFrame([df])
         elif type(df) is list:
-            df = pd.DataFrame(df)
+            df = DataFrame(df)
 
         def __process():
             with self._ctx.cursor() as cur:
-                cur.execute(f'CREATE SCHEMA IF NOT EXISTS {database}.{schema}')
+                cur.execute(
+                    f'CREATE SCHEMA IF NOT EXISTS {database}.{schema}',
+                    timeout=self.timeout,
+                )
 
-                cur.execute(f'USE DATABASE {database}')
-                cur.execute(f'SELECT * FROM information_schema.tables WHERE table_schema = '
-                            f'\'{schema}\' AND table_name = \'{table_name}\'')
+                cur.execute(f'USE DATABASE {database}', timeout=self.timeout)
+                cur.execute(
+                    'SELECT * FROM information_schema.tables WHERE table_schema = ' +
+                    f'\'{schema}\' AND table_name = \'{table_name}\'',
+                    timeout=self.timeout,
+                )
 
                 table_exists = cur.rowcount >= 1
                 should_create_table = not table_exists
@@ -238,23 +258,23 @@ class Snowflake(BaseSQLConnection):
                             'database, schema scenario.'
                         )
                     elif ExportWritePolicy.REPLACE == if_exists:
-                        cur.execute(f'USE DATABASE {database}')
-                        cur.execute(f'DROP TABLE "{schema}"."{table_name}"')
+                        cur.execute(f'USE DATABASE {database}', timeout=self.timeout)
+                        cur.execute(f'DROP TABLE "{schema}"."{table_name}"', timeout=self.timeout)
                         should_create_table = True
 
                 if query_string:
-                    cur.execute(f'USE DATABASE {database}')
+                    cur.execute(f'USE DATABASE {database}', timeout=self.timeout)
 
                     if should_create_table:
                         cur.execute(f"""
 CREATE TABLE IF NOT EXISTS "{database}"."{schema}"."{table_name}" AS
 {query_string}
-""")
+""", timeout=self.timeout)
                     else:
                         cur.execute(f"""
 INSERT INTO "{database}"."{schema}"."{table_name}"
 {query_string}
-""")
+""", timeout=self.timeout)
 
                 else:
                     write_pandas(
@@ -296,6 +316,9 @@ INSERT INTO "{database}"."{schema}"."{table_name}"
             user=config[ConfigKey.SNOWFLAKE_USER],
             warehouse=config[ConfigKey.SNOWFLAKE_DEFAULT_WH],
         )
+
+        if ConfigKey.SNOWFLAKE_TIMEOUT in config:
+            conn_kwargs['timeout'] = config[ConfigKey.SNOWFLAKE_TIMEOUT]
 
         if ConfigKey.SNOWFLAKE_ROLE in config:
             conn_kwargs['role'] = config[ConfigKey.SNOWFLAKE_ROLE]

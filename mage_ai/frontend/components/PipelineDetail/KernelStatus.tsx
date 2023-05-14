@@ -8,6 +8,7 @@ import {
 import { ThemeContext } from 'styled-components';
 import { useMutation } from 'react-query';
 
+import BlockType from '@interfaces/BlockType';
 import Circle from '@oracle/elements/Circle';
 import ClickOutside from '@oracle/components/ClickOutside';
 import ClusterType, { ClusterStatusEnum } from '@interfaces/ClusterType';
@@ -18,14 +19,15 @@ import FlyoutMenu from '@oracle/components/FlyoutMenu';
 import KernelType from '@interfaces/KernelType';
 import KeyboardShortcutButton from '@oracle/elements/Button/KeyboardShortcutButton';
 import KeyboardText from '@oracle/elements/KeyboardText';
-import LabelWithValueClicker from '@oracle/components/LabelWithValueClicker';
 import Link from '@oracle/elements/Link';
 import PipelineType, { PipelineTypeEnum, PIPELINE_TYPE_TO_KERNEL_NAME } from '@interfaces/PipelineType';
+import PopupMenu from '@oracle/components/PopupMenu';
 import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
 import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
 import dark from '@oracle/styles/themes/dark';
+import usePrevious from '@utils/usePrevious';
 
 import { Check } from '@oracle/icons';
 import { CloudProviderSparkClusterEnum } from '@interfaces/CloudProviderType';
@@ -36,6 +38,11 @@ import {
   KEY_SYMBOL_META,
   KEY_SYMBOL_S,
 } from '@utils/hooks/keyboardShortcuts/constants';
+import {
+  LOCAL_STORAGE_KEY_HIDE_KERNEL_WARNING,
+  get,
+  set,
+} from '@storage/localStorage';
 import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
 import { PipelineHeaderStyle } from './index.style';
 import { ThemeType } from '@oracle/styles/themes/constants';
@@ -45,8 +52,10 @@ import { goToWithQuery } from '@utils/routing';
 import { isMac } from '@utils/os';
 import { onSuccess } from '@api/utils/response';
 import { useKeyboardContext } from '@context/Keyboard';
+import { useModal } from '@context/Modal';
 
 type KernelStatusProps = {
+  children?: any;
   filePaths: string[];
   filesTouched: {
     [path: string]: boolean;
@@ -61,10 +70,12 @@ type KernelStatusProps = {
   savePipelineContent: () => void;
   selectedFilePath?: string;
   setErrors: (errors: ErrorsType) => void;
+  setRunningBlocks: (blocks: BlockType[]) => void;
   updatePipelineMetadata: (name: string, type?: string) => void;
 };
 
 function KernelStatus({
+  children,
   filePaths: filePathsProp,
   filesTouched,
   isBusy,
@@ -77,12 +88,13 @@ function KernelStatus({
   savePipelineContent,
   selectedFilePath,
   setErrors,
+  setRunningBlocks,
   updatePipelineMetadata,
 }: KernelStatusProps) {
   const themeContext: ThemeType = useContext(ThemeContext);
   const {
     alive,
-    name,
+    usage,
   } = kernel || {};
   const [isEditingPipeline, setIsEditingPipeline] = useState(false);
   const [newPipelineName, setNewPipelineName] = useState('');
@@ -97,16 +109,22 @@ function KernelStatus({
   const {
     data: dataClusters,
     mutate: fetchClusters,
-  } = api.clusters.detail(selectedSparkClusterType);
-  const clusters: ClusterType[] = useMemo(() => dataClusters?.cluster?.clusters || [], dataClusters);
-  const selectedCluster = find(clusters, ({ is_active: isActive }) => isActive);
+  } = api.clusters.detail(selectedSparkClusterType, {}, { revalidateOnFocus: false });
+  const clusters: ClusterType[] = useMemo(
+    () => dataClusters?.cluster?.clusters || [],
+    [dataClusters],
+  );
+  const selectedCluster = useMemo(
+    () => find(clusters, ({ is_active: isActive }) => isActive),
+    [clusters],
+  );
 
-  const [updateCluster, { isLoading: isLoadingUpdateCluster }] = useMutation(
+  const [updateCluster] = useMutation(
     api.clusters.useUpdate(selectedSparkClusterType),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
-          callback: (response) => {
+          callback: () => {
             fetchClusters();
           },
           onErrorCallback: (response, errors) => setErrors({
@@ -168,25 +186,56 @@ function KernelStatus({
     ],
   );
 
-  const pipelineNameInput = useMemo(() => (
-    <LabelWithValueClicker
-      bold={false}
-      inputValue={newPipelineName}
-      notRequired
-      onBlur={() => setTimeout(() => setIsEditingPipeline(false), 300)}
-      onChange={(e) => {
-        setNewPipelineName(e.target.value);
-        e.preventDefault();
+  const kernelPid = useMemo(() => usage?.pid, [usage?.pid]);
+  const kernelPidPrevious = usePrevious(kernelPid);
+
+  const kernelMemory = useMemo(() => {
+    if (usage?.kernel_memory) {
+      const memory = usage.kernel_memory;
+      const k = 1024;
+      const dm = 2;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+
+      const i = Math.floor(Math.log(memory) / Math.log(k));
+
+      return `${parseFloat((memory / Math.pow(k, i)).toFixed(dm))}${sizes[i]}`;
+    }
+  }, [usage?.kernel_memory]);
+
+  const [showKernelWarning, hideKernelWarning] = useModal(() => (
+    <PopupMenu
+      cancelText="Close"
+      centerOnScreen
+      confirmText="Don't show again"
+      neutral
+      onCancel={hideKernelWarning}
+      onClick={() => {
+        set(LOCAL_STORAGE_KEY_HIDE_KERNEL_WARNING, 1);
+        hideKernelWarning();
       }}
-      onClick={() => setIsEditingPipeline(true)}
-      onFocus={() => setIsEditingPipeline(true)}
-      stacked
-      value={isEditingPipeline ? null : (pipeline?.uuid || '')}
+      subtitle={
+        'You may need to refresh your page to continue using the notebook. Unexpected ' +
+        'kernel restarts may be caused by your kernel running out of memory.'
+      }
+      title="The kernel has restarted"
+      width={UNIT * 34}
     />
-  ), [
-    isEditingPipeline,
-    newPipelineName,
-    pipeline,
+  ), {}, [], {
+    background: true,
+    uuid: 'restart_kernel_warning',
+  });
+
+  useEffect(() => {
+    const hide = get(LOCAL_STORAGE_KEY_HIDE_KERNEL_WARNING, 0);
+    if (kernelPid !== kernelPidPrevious && isBusy && !hide) {
+      showKernelWarning();
+      setRunningBlocks([]);
+    }
+  }, [
+    isBusy,
+    kernelPid,
+    kernelPidPrevious,
+    setRunningBlocks,
   ]);
 
   const kernelStatus = useMemo(() => (
@@ -317,7 +366,7 @@ function KernelStatus({
                   label: () => type,
                   onClick: () => updatePipelineMetadata(pipeline?.name, type),
                   uuid: type,
-                }))
+                })),
             ]}
             onClickCallback={() => setShowSelectKernel(false)}
             open={showSelectKernel}
@@ -340,24 +389,6 @@ function KernelStatus({
     showSelectKernel,
     themeContext,
     updateCluster,
-  ]);
-
-  const pipelineName = useMemo(() => (
-    <Flex alignItems="center">
-      <Text>
-        Pipeline:&nbsp;{selectedFilePath && pipeline?.uuid}
-      </Text>
-      {!selectedFilePath && pipelineNameInput}
-
-      <Spacing mr={3} />
-    </Flex>
-  ), [
-    alive,
-    isBusy,
-    pipeline,
-    pipelineNameInput,
-    selectedFilePath,
-    themeContext,
   ]);
 
   return (
@@ -383,13 +414,13 @@ function KernelStatus({
                 }
                 preventDefault
               >
-                {pipelineName}
+                {children}
               </Link>
             )}
 
             {!selectedFilePath && (
               <FlexContainer alignItems="center">
-                {pipelineName}
+                {children}
                 {isEditingPipeline && (
                   <>
                     <Spacing ml={1} />
@@ -409,12 +440,23 @@ function KernelStatus({
               </FlexContainer>
             )}
           </Spacing>
+
+          {usage && (
+            <Spacing mr={PADDING_UNITS}>
+              <Flex flexDirection="column">
+                <Text monospace muted xsmall>
+                  CPU: {usage?.kernel_cpu}{typeof usage?.kernel_cpu !== 'undefined' && '%'}
+                </Text>
+                <Text monospace muted xsmall>
+                  Memory: {kernelMemory}
+                </Text>
+              </Flex>
+            </Spacing>
+          )}
         </FlexContainer>
 
         <Spacing px={PADDING_UNITS}>
           <Flex alignItems="center">
-            {kernelStatus}
-            <Spacing ml={2}/>
             <Tooltip
               appearBefore
               block
@@ -449,6 +491,10 @@ function KernelStatus({
                 {saveStatus}
               </Text>
             </Tooltip>
+
+            <Spacing ml={2}/>
+
+            {kernelStatus}
           </Flex>
         </Spacing>
       </FlexContainer>

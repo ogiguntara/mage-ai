@@ -4,6 +4,7 @@ import { useRouter } from 'next/router';
 
 import Button from '@oracle/elements/Button';
 import Divider from '@oracle/elements/Divider';
+import ErrorsType from '@interfaces/ErrorsType';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
 import Paginate from '@components/shared/Paginate';
@@ -19,7 +20,7 @@ import PipelineScheduleType, {
   ScheduleTypeEnum,
 } from '@interfaces/PipelineScheduleType';
 import PipelineType from '@interfaces/PipelineType';
-import PipelineVariableType from '@interfaces/PipelineVariableType';
+import PipelineVariableType, { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
 import Table from '@components/shared/Table';
@@ -28,9 +29,11 @@ import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
 import buildTableSidekick, { TABS } from '@components/PipelineRun/shared/buildTableSidekick';
 import { BEFORE_WIDTH, BeforeStyle } from '@components/PipelineDetail/shared/index.style';
+import { BlockTypeEnum } from '@interfaces/BlockType';
 import {
   CalendarDate,
   Info,
+  Lightning,
   MultiShare,
   MusicNotes,
   Pause,
@@ -39,6 +42,7 @@ import {
   Sun,
   Switch,
 } from '@oracle/icons';
+import { MAGE_VARIABLES_KEY } from '@interfaces/PipelineRunType';
 import {
   PADDING_UNITS,
   UNIT,
@@ -53,6 +57,7 @@ import {
   getFormattedVariables,
 } from '@components/Sidekick/utils';
 import { convertSeconds } from '../utils';
+import { getModelAttributes } from '@utils/models/dbt';
 import { goToWithQuery } from '@utils/routing';
 import { ignoreKeys, isEmptyObject } from '@utils/hash';
 import { isViewer } from '@utils/session';
@@ -61,23 +66,26 @@ import { pauseEvent } from '@utils/events';
 import { queryFromUrl, queryString } from '@utils/url';
 
 type TriggerDetailProps = {
+  errors: ErrorsType;
   fetchPipelineSchedule: () => void;
   pipeline: PipelineType;
   pipelineSchedule?: PipelineScheduleType;
+  setErrors: (errors: ErrorsType) => void;
   variables?: PipelineVariableType[];
 };
 
 const LIMIT = 30;
 
 function TriggerDetail({
+  errors,
   fetchPipelineSchedule,
   pipeline,
   pipelineSchedule,
+  setErrors,
   variables,
 }: TriggerDetailProps) {
   const router = useRouter();
   const isViewerRole = isViewer();
-  const [errors, setErrors] = useState(null);
 
   const {
     uuid: pipelineUUID,
@@ -131,10 +139,10 @@ function TriggerDetail({
           })}
           pipelineRuns={pipelineRuns}
           selectedRun={selectedRun}
+          setErrors={setErrors}
         />
         <Spacing p={2}>
           <Paginate
-            page={Number(page)}
             maxPages={9}
             onUpdate={(p) => {
               const newPage = Number(p);
@@ -147,6 +155,7 @@ function TriggerDetail({
                 `/pipelines/${pipelineUUID}/triggers/${pipelineScheduleID}?${queryString(updatedQuery)}`,
               );
             }}
+            page={Number(page)}
             totalPages={Math.ceil(totalRuns / LIMIT)}
           />
         </Spacing>
@@ -206,7 +215,7 @@ function TriggerDetail({
           monospace
         >
           {SCHEDULE_TYPE_TO_LABEL[scheduleType]?.()}
-        </Text>
+        </Text>,
       ],
       [
         <FlexContainer
@@ -226,7 +235,7 @@ function TriggerDetail({
           success={isActive}
         >
           {status}
-        </Text>
+        </Text>,
       ],
     ];
 
@@ -250,8 +259,8 @@ function TriggerDetail({
             monospace
           >
             {`${time} ${finalUnit}`}
-          </Text>
-        ]
+          </Text>,
+        ],
       );
     }
 
@@ -357,10 +366,11 @@ function TriggerDetail({
   }, [
     isActive,
     scheduleInterval,
+    scheduleType,
     settings,
     sla,
     startTime,
-    scheduleType,
+    status,
   ]);
 
   const scheduleVariables = useMemo(() => scheduleVariablesInit || {}, [scheduleVariablesInit]);
@@ -369,13 +379,15 @@ function TriggerDetail({
 
     if (!isEmptyObject(scheduleVariables)) {
       Object.entries(scheduleVariables).forEach(([k, v]) => {
-        arr.push({
-          uuid: k,
-          value: getFormattedVariable(v),
-        });
+        if (MAGE_VARIABLES_KEY !== k) {
+          arr.push({
+            uuid: k,
+            value: getFormattedVariable(v),
+          });
+        }
       });
     } else {
-      arr = getFormattedVariables(variables, block => block.uuid === 'global');
+      arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID);
     }
 
     arr = addTriggerVariables(arr || [], scheduleType);
@@ -411,8 +423,85 @@ function TriggerDetail({
     );
   }, [
     scheduleType,
-    scheduleVariablesInit,
+    scheduleVariables,
     variables,
+  ]);
+
+  const dbtSettingsTable = useMemo(() => {
+    const arr = [];
+    // @ts-ignore
+    const blocksData = scheduleVariables?.[MAGE_VARIABLES_KEY]?.blocks;
+
+    pipeline?.blocks?.forEach((block) => {
+      const {
+        type,
+        uuid,
+      } = block;
+
+      if (BlockTypeEnum.DBT === type) {
+        const config = blocksData?.[uuid]?.configuration;
+        const {
+          flags,
+          prefix,
+          suffix,
+        } = config || {};
+        const {
+          name: modelName,
+        } = getModelAttributes(block);
+
+        if (flags || prefix || suffix) {
+          arr.push({
+            flags,
+            prefix,
+            suffix,
+            uuid: modelName,
+          });
+        }
+      }
+    });
+
+    if (typeof arr === 'undefined' || !arr?.length) {
+      return null;
+    }
+
+    return (
+      <Table
+        columnFlex={[1, null]}
+        rows={arr.map(({
+          flags,
+          prefix,
+          suffix,
+          uuid,
+        }) => [
+          <Text
+            key={`settings_variable_label_${uuid}`}
+            monospace
+            small
+          >
+            {prefix && (
+              <Text inline monospace muted small>
+                {prefix}
+              </Text>
+            )}{uuid}{suffix && (
+              <Text inline monospace muted small>
+                {suffix}
+              </Text>
+            )}
+          </Text>,
+          <Text
+            key={`settings_variable_${uuid}`}
+            monospace
+            muted
+            small
+          >
+            {flags && flags.join(', ')}
+          </Text>,
+        ])}
+      />
+    );
+  }, [
+    pipeline,
+    scheduleVariables,
   ]);
 
   const eventsTable = useMemo(() => (
@@ -424,7 +513,7 @@ function TriggerDetail({
         },
         {
           uuid: 'Event',
-        }
+        },
       ]}
       rows={eventMatchers?.map(({
         event_type: eventType,
@@ -463,6 +552,9 @@ function TriggerDetail({
               )}
               {ScheduleTypeEnum.EVENT === scheduleType && (
                 <MusicNotes size={5 * UNIT} />
+              )}
+              {ScheduleTypeEnum.API === scheduleType && (
+                <Lightning size={5 * UNIT} />
               )}
               {!scheduleType && (
                 <MultiShare size={5 * UNIT} />
@@ -509,6 +601,20 @@ function TriggerDetail({
               <Divider light mt={1} short />
 
               {variablesTable}
+            </Spacing>
+          )}
+
+          {dbtSettingsTable && (
+            <Spacing my={UNITS_BETWEEN_SECTIONS}>
+              <Spacing px={PADDING_UNITS}>
+                <Headline level={5}>
+                  dbt runtime settings
+                </Headline>
+              </Spacing>
+
+              <Divider light mt={1} short />
+
+              {dbtSettingsTable}
             </Spacing>
           )}
         </BeforeStyle>

@@ -1,13 +1,8 @@
 import Ansi from 'ansi-to-react';
-import useWebSocket from 'react-use-websocket';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import AuthToken from '@api/utils/AuthToken';
 import ClickOutside from '@oracle/components/ClickOutside';
-import KernelOutputType, {
-  DataTypeEnum,
-  DATA_TYPE_TEXTLIKE,
-} from '@interfaces/KernelOutputType';
 import Text from '@oracle/elements/Text';
 import {
   CharacterStyle,
@@ -16,6 +11,10 @@ import {
   InputStyle,
   LineStyle,
 } from './index.style';
+import {
+  DataTypeEnum,
+  DATA_TYPE_TEXTLIKE,
+} from '@interfaces/KernelOutputType';
 import {
   KEY_CODE_ARROW_DOWN,
   KEY_CODE_ARROW_LEFT,
@@ -29,7 +28,6 @@ import {
   KEY_CODE_V,
 } from '@utils/hooks/keyboardShortcuts/constants';
 import { OAUTH2_APPLICATION_CLIENT_ID } from '@api/constants';
-import { getWebSocket } from '@api/utils/url';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
 import { pauseEvent } from '@utils/events';
 import { useKeyboardContext } from '@context/Keyboard';
@@ -37,15 +35,17 @@ import { useKeyboardContext } from '@context/Keyboard';
 export const DEFAULT_TERMINAL_UUID = 'terminal';
 
 type TerminalProps = {
-  interruptKernel: () => void;
+  lastMessage: WebSocketEventMap['message'] | null;
   onFocus?: () => void;
+  sendMessage: (message: string, keep?: boolean) => void;
   uuid?: string;
   width?: number;
 };
 
 function Terminal({
-  interruptKernel,
+  lastMessage,
   onFocus,
+  sendMessage,
   uuid: terminalUUID = DEFAULT_TERMINAL_UUID,
   width,
 }: TerminalProps) {
@@ -54,23 +54,19 @@ function Terminal({
 
   const [command, setCommand] = useState<string>('');
   const [commandIndex, setCommandIndex] = useState<number>(0);
-  const [finalCommand, setFinalCommand] = useState<string>('');
   const [cursorIndex, setCursorIndex] = useState<number>(0);
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [focus, setFocus] = useState<boolean>(false);
-  const [kernelOutputs, setKernelOutputs] = useState<(KernelOutputType & {
-    command: boolean;
-  })[]>([]);
 
   const [stdout, setStdout] = useState<string>();
 
-  const {
-    lastMessage,
-    readyState,
-    sendMessage,
-  } = useWebSocket(getWebSocket('terminal'), {
-    shouldReconnect: () => true,
-  });
+  const token = useMemo(() => new AuthToken(), []);
+  const oauthWebsocketData = useMemo(() => ({
+    api_key: OAUTH2_APPLICATION_CLIENT_ID,
+    token: token.decodedToken.token,
+  }), [
+    token,
+  ]);
 
   useEffect(() => {
     if (lastMessage) {
@@ -79,14 +75,14 @@ function Terminal({
       setStdout(prev => {
         const p = prev || '';
         if (msg[0] === 'stdout') {
-          return p + msg[1];
+          const out = msg[1];
+          return p + out;
         }
         return p;
-      })
+      });
     }
   }, [
     lastMessage,
-    terminalUUID,
   ]);
 
   const kernelOutputsUpdated = useMemo(() => {
@@ -98,7 +94,7 @@ function Terminal({
     const splitStdout =
       stdout
         .split('\n')
-        .filter(d => !d.includes("# Mage terminal settings command"));
+        .filter(d => !d.includes('# Mage terminal settings command'));
 
     return splitStdout.map(d => ({
       data: d,
@@ -112,6 +108,7 @@ function Terminal({
       refContainer.current.scrollTo(0, height);
     }
   }, [
+    command,
     kernelOutputsUpdated,
     refContainer,
     refInner,
@@ -131,24 +128,38 @@ function Terminal({
     setCursorIndex(currIdx => currIdx > 0 ? currIdx - 1 : currIdx);
   }, []);
   const increaseCursorIndex = useCallback(() => {
-    setCursorIndex(currIdx => (currIdx <= command.length) ? currIdx + 1 : currIdx);
+    setCursorIndex(currIdx => (currIdx < command.length) ? currIdx + 1 : currIdx);
   }, [command]);
+
+  const sendCommand = useCallback((cmd) => {
+    sendMessage(JSON.stringify({
+      ...oauthWebsocketData,
+      command: ['stdin', cmd],
+    }));
+    sendMessage(JSON.stringify({
+      ...oauthWebsocketData,
+      command: ['stdin', '\r'],
+    }));
+    if (cmd?.length >= 2) {
+      setCommandIndex(commandHistory.length + 1);
+      setCommandHistory(prev => prev.concat(cmd));
+      setCursorIndex(0);
+    }
+    setCommand('');
+  }, [
+    commandHistory,
+    sendMessage,
+    setCommand,
+    setCommandHistory,
+    setCommandIndex,
+    setCursorIndex,
+  ]);
 
   const handleCopiedText = useCallback((clipText) => {
     const lines = clipText?.split(/\n/) || [];
     if (lines.length > 1) {
       const enteredLines = lines.slice(0, -1);
-      enteredLines[0] = command + enteredLines[0];
-      const lineCommands = enteredLines.map((line, idx) => ({
-        command: idx === 0,
-        data: line,
-        type: DataTypeEnum.TEXT,
-      }));
-      setCommandIndex(commandHistory.length + enteredLines.length);
-      setCommandHistory(prev => prev.concat(enteredLines));
-      // @ts-ignore
-      setKernelOutputs(prev => prev.concat(lineCommands));
-      setFinalCommand(prev => prev + enteredLines.join('\n'));
+      sendCommand(command + enteredLines.join('\n'));
       const currentCommand = (lines.slice(-1)[0] || '').trim();
       setCommand(currentCommand);
       setCursorIndex(currentCommand.length);
@@ -156,7 +167,12 @@ function Terminal({
       setCommand(prev => prev + clipText);
       setCursorIndex(command.length + clipText.length);
     }
-  }, [command, commandHistory]);
+  }, [
+    command,
+    sendCommand,
+    setCommand,
+    setCursorIndex,
+  ]);
 
   registerOnKeyDown(
     terminalUUID,
@@ -169,17 +185,17 @@ function Terminal({
       if (focus) {
         pauseEvent(event);
         if (onlyKeysPresent([KEY_CODE_CONTROL, KEY_CODE_C], keyMapping)) {
-          const finalEnteredCommand = finalCommand + command;
-          if (finalEnteredCommand?.length >= 0) {
-            sendMessage(JSON.stringify([
-              'stdin', finalEnteredCommand
-            ]));
-            sendMessage(JSON.stringify([
-              'stdin', '\x03'
-            ]));
+          if (command?.length >= 0) {
+            sendMessage(JSON.stringify({
+              ...oauthWebsocketData,
+              command: ['stdin', command],
+            }));
+            sendMessage(JSON.stringify({
+              ...oauthWebsocketData,
+              command: ['stdin', '\x03'],
+            }));
             setCursorIndex(0);
           }
-          setFinalCommand('');
           setCommand('');
         } else {
           if (KEY_CODE_BACKSPACE === code && !keyMapping[KEY_CODE_META]) {
@@ -206,20 +222,7 @@ function Terminal({
               setCursorIndex(nextCommand.length);
             }
           } else if (onlyKeysPresent([KEY_CODE_ENTER], keyMapping)) {
-            const finalEnteredCommand = finalCommand + command;
-            sendMessage(JSON.stringify([
-              'stdin', finalEnteredCommand
-            ]));
-            sendMessage(JSON.stringify([
-              'stdin', '\r'
-            ]));
-            if (finalEnteredCommand?.length >= 2) {
-              setCommandIndex(commandHistory.length + 1);
-              setCommandHistory(prev => prev.concat(command));
-              setCursorIndex(0);
-            }
-            setFinalCommand('');
-            setCommand('');
+            sendCommand(command);
           } else if (onlyKeysPresent([KEY_CODE_META, KEY_CODE_C], keyMapping)) {
             navigator.clipboard.writeText(window.getSelection().toString());
           } else if (onlyKeysPresent([KEY_CODE_META, KEY_CODE_V], keyMapping)
@@ -271,7 +274,7 @@ in the context menu that appears.
             }
           } else if (!keyMapping[KEY_CODE_META] && !keyMapping[KEY_CODE_CONTROL] && key.length === 1) {
             setCommand(prev => prev.slice(0, cursorIndex) + key + prev.slice(cursorIndex));
-            increaseCursorIndex();
+            setCursorIndex(currIdx => currIdx + 1);
           }
         }
       }
@@ -281,18 +284,17 @@ in the context menu that appears.
       commandHistory,
       commandIndex,
       focus,
-      interruptKernel,
       setCommand,
       setCommandHistory,
       setCommandIndex,
-      setKernelOutputs,
       terminalUUID,
     ],
   );
 
-  const lastCommand = useMemo(() => {
-    return kernelOutputsUpdated[kernelOutputsUpdated.length - 1]?.data;
-  }, [kernelOutputsUpdated]);
+  const lastCommand = useMemo(
+    () => kernelOutputsUpdated[kernelOutputsUpdated.length - 1]?.data,
+    [kernelOutputsUpdated],
+  );
 
   return (
     <ContainerStyle
@@ -348,8 +350,9 @@ in the context menu that appears.
                 displayElement = (
                   <Text
                     monospace
-                    noWrapping
-                    pre
+                    preWrap
+                    // This used to be a no wrap Text component, but changing it
+                    // to no wrap for now. Please change it back if you see any issues.
                   >
                     {data && (
                       <Ansi>
@@ -365,9 +368,11 @@ in the context menu that appears.
 
                 if (!command) {
                   arr.push(
-                    <LineStyle key={key}>
+                    // <LineStyle key={key}>
+                    <div key={key}>
                       {displayElement}
-                    </LineStyle>,
+                    </div>,
+                    // </LineStyle>,
                   );
                 }
               }
@@ -379,7 +384,7 @@ in the context menu that appears.
           {(
             <InputStyle
               focused={focus
-                && (command?.length === 0 || cursorIndex > command?.length)}
+                && (command?.length === 0)}
             >
               <Text monospace>
                 <Text inline monospace>
@@ -389,13 +394,18 @@ in the context menu that appears.
                     </Ansi>
                   )}
                 </Text>
-                {command?.split('').map(((char: string, idx: number) => (
+                {command?.split('').map(((char: string, idx: number, arr: string[]) => (
                   <CharacterStyle
                     focusBeginning={focus && cursorIndex === 0 && idx === 0}
-                    focused={focus && cursorIndex === idx + 1}
+                    focused={
+                      focus && 
+                        (cursorIndex === idx + 1 ||
+                          cursorIndex >= arr.length && idx === arr.length - 1)
+                    }
                     key={`command-${idx}-${char}`}
                   >
                     {char === ' ' && <>&nbsp;</>}
+                    {char === '\n' && <br />}
                     {char !== ' ' && char}
                   </CharacterStyle>
                 )))}

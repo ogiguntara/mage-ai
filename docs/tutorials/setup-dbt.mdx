@@ -1,6 +1,9 @@
 ---
 title: "Set up DBT models & orchestrate DBT runs"
 sidebarTitle: "DBT orchestration"
+icon: "database"
+description: "Tutorial for setting up dbt in Mage and "
+"og:image": "https://www.getdbt.com/ui/img/social/facebook.png"
 ---
 
 <img alt="DBT" src="https://www.getdbt.com/ui/img/social/facebook.png" width="500" />
@@ -26,7 +29,11 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 1. Open Mage and go to the terminal page: http://localhost:6789/terminal
 2. Add `dbt-postgres` to your project’s dependencies file (`requirements.txt`)
    by typing the following into the terminal in your browser:
-   `bash echo dbt-postgres > demo_project/requirements.txt `
+
+   ```bash
+   echo dbt-postgres > demo_project/requirements.txt
+   ```
+
 3. Install your project’s dependencies using `pip` by typing the following:
 
    ```bash
@@ -57,8 +64,8 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 
 1. Go to the [Mage dashboard](http://localhost:6789/) and click the button
    **`+ New pipeline`** and select the option labeled `Standard (batch)`.
-2. Near the top of the page, click the pipeline name and change it to
-   `dbt demo pipeline`.
+2. Click the `Pipeline settings` icon in the left pane, and change its name
+   to `dbt demo pipeline`, then click the `Save pipeline settings` button.
 
 ---
 
@@ -73,13 +80,13 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
      target: dev
      outputs:
        dev:
-         dbname: mage/demo2
+         dbname: mage/demo
          host: db.bit.io
-         password: v2_3zrTg_tEtLAC2G528vpSWau9p79a3
+         password: v2_43Yy3_5LtqyXUE3ew6PrqH2y8zQyH
          port: 5432
          schema: dbt_demo
          type: postgres
-         user: mage
+         user: demo
    ```
 4. Save the `profiles.yml` file by pressing `Command (⌘)` + `S`.
 5. Close the file by pressing the **`X`** button on the right side of the file
@@ -90,10 +97,9 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 ## 5. Add data loader block to pipeline
 
 1. Click the **`+ Data loader`** button, select `Python`, then click `API`.
-2. At the top of the block, on the right of `DATA LOADER`, click the name of the
-   block.
-3. Change the name to `load data`.
-4. Paste the following code in that block:
+2. In the popup dialog `Data loader block name`, change its name to `load data`,
+   then click the `Save and add block` button.
+3. Paste the following code in that block:
 
     ```python
     import io
@@ -118,10 +124,12 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 1. Under the data loader block you just added, click the button **`DBT model`**,
    then click the option `Single model`.
 2. In the file browser that pops up, click the file named
-   `my_second_dbt_model.sql` under the folders `demo/models/example/`. 1. This
-   will add 2 DBT blocks to your pipeline: 1 for the DBT model named
-   `my_first_dbt_model` and the 2nd for the DBT model named
-   `my_second_dbt_model`. 1. The model named `my_first_dbt_model` was added to
+   `my_second_dbt_model.sql` under the folders `demo/models/example/`. 
+   
+   1. This will add 2 DBT blocks to your pipeline: 1 for the DBT model named
+   `my_first_dbt_model` and the 2nd for the DBT model named `my_second_dbt_model`. 
+   
+   2. The model named `my_first_dbt_model` was added to
    the pipeline because `my_second_dbt_model` references it.
 
 ![](https://github.com/mage-ai/assets/blob/main/dbt/add-dbt-model.gif?raw=true)
@@ -129,7 +137,8 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 ### 6a. Edit DBT model `my_first_dbt_model`
 
 1. In the DBT block named `my_first_dbt_model`, next to the label
-   `DBT profile target` at the top is an input field, enter `dev`.
+   `Target` at the top, choose `dev` in the dropdown list.  You can also
+   check `Manually enter target`, and enter `dev` in the input field.
 2. Paste the following SQL into the DBT model named `my_first_dbt_model`:
 
    ```sql
@@ -145,19 +154,23 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 
 3. Run the DBT model block by pressing the play button on the top right of the
    block or by pressing `Command` + `Enter`.
-4. You should see a preview of the query results.
+4. You should see a preview of the query execution logs. To see the query results,
+   click the `Expand table` link at the bottom right corner.
 
 ![](https://github.com/mage-ai/assets/blob/main/dbt/dbt-preview.gif?raw=true)
 
-5. After previewing the results, in the top right corner of the block, click on the triple dots to reveal a dropdown menu.
-6. Under the dropdown menu, click the option <b>Run model</b>. This command will execute the `dbt run` command and create the table in your data source.
+5. After previewing the results, in the top right corner of the block,
+   click on the triple dots to reveal a dropdown menu.
+6. Under the dropdown menu, click the option <b>Run model</b>. This command
+   will execute the `dbt run` command and create the table in your data source.
 
 ![](https://github.com/mage-ai/assets/blob/main/dbt/run-model.png?raw=true)
 
 ### 6b. Edit DBT model `my_second_dbt_model`
 
 1. In the DBT block named `my_second_dbt_model`, next to the label
-   `DBT profile target` at the top is an input field, enter `dev`.
+   `Target` at the top, choose `dev` in the dropdown list.  You can also
+   check `Manually enter target`, and enter `dev` in the input field.
 2. Paste the following SQL into the DBT model named `my_second_dbt_model`:
 
    ```sql
@@ -183,7 +196,8 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 
 3. Run the DBT model block by pressing the play button on the top right of the
    block or by pressing `Command` + `Enter`.
-4. You should see a preview of the query results.
+4. You should see a preview of the query execution logs. To see the query results,
+   click the `Expand table` link at the bottom right corner.
 
 ---
 
@@ -213,9 +227,9 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 
 1.  Click the name of the pipeline in the header breadcrumbs to go back to the
     detail page.
-2.  Create a new trigger (you can use any interval you want for this tutorial).
+2.  Create a new trigger with a type `Schedule` and a Frequency `once`.
     For more details, follow these
-    [steps](design/data-pipeline-management#create-trigger).
+    [steps](/design/data-pipeline-management#create-trigger).
 3.  After your trigger is created, click the **`Start trigger`** button at the
     top of the page.
 4.  The pipeline will eventually fail because a DBT test failed. This means
@@ -223,27 +237,28 @@ For the rest of this tutorial, we’ll use the project name `demo_project`.
 5.  Open the file `demo_project/dbt/demo/models/example/schema.yml` and remove
     the tests named `unique` under both models. Your file should look like this:
 
-    ````yaml version: 2
+    ```yaml 
 
-        models:
-          - name: my_first_dbt_model
-            description: "A starter dbt model"
-            columns:
-              - name: id
-                description: "The primary key for this table"
-                tests:
-                  - not_null
+    version: 2
 
-          - name: my_second_dbt_model
-            description: "A starter dbt model"
-            columns:
-              - name: id
-                description: "The primary key for this table"
-                tests:
-                  - not_null
-        ```
+    models:
+      - name: my_first_dbt_model
+        description: "A starter dbt model"
+        columns:
+          - name: id
+            description: "The primary key for this table"
+            tests:
+              - not_null
 
-    ````
+      - name: my_second_dbt_model
+        description: "A starter dbt model"
+        columns:
+          - name: id
+            description: "The primary key for this table"
+            tests:
+              - not_null
+
+    ```
 
 6.  Click on the **`Failed`** button next to the pipeline run and click
     **`Retry run`**. It should complete running successfully after a few

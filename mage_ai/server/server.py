@@ -1,6 +1,4 @@
 from mage_ai.authentication.passwords import create_bcrypt_hash, generate_salt
-from mage_ai.data_preparation.models.constants import DATAFRAME_SAMPLE_COUNT_PREVIEW
-from mage_ai.data_preparation.models.pipeline import Pipeline
 from mage_ai.data_preparation.repo_manager import (
     get_repo_path,
     init_repo,
@@ -13,7 +11,6 @@ from mage_ai.server.active_kernel import switch_active_kernel
 from mage_ai.server.api.base import BaseHandler
 from mage_ai.server.api.blocks import (
     ApiPipelineBlockAnalysisHandler,
-    ApiPipelineBlockExecuteHandler,
     ApiPipelineBlockOutputHandler,
 )
 from mage_ai.server.api.clusters import (
@@ -43,23 +40,34 @@ from mage_ai.server.scheduler_manager import (
     scheduler_manager,
 )
 from mage_ai.server.subscriber import get_messages
+from mage_ai.server.terminal_server import (
+    MageTermManager,
+    MageUniqueTermManager,
+    TerminalWebsocketServer,
+)
 from mage_ai.server.websocket_server import WebSocketServer
 from mage_ai.settings import (
-    OAUTH2_APPLICATION_CLIENT_ID,
-    REQUIRE_USER_AUTHENTICATION,
+    is_disable_pipeline_edit_access,
     AUTHENTICATION_MODE,
     LDAP_ADMIN_USERNAME,
+    OAUTH2_APPLICATION_CLIENT_ID,
+    REQUIRE_USER_AUTHENTICATION,
+    SERVER_VERBOSITY,
+    SHELL_COMMAND,
+    USE_UNIQUE_TERMINAL,
 )
+from mage_ai.shared.logger import LoggingLevel
 from mage_ai.shared.utils import is_port_in_use
+from mage_ai.usage_statistics.logger import UsageStatisticLogger
+from time import sleep
 from tornado import autoreload
 from tornado.ioloop import PeriodicCallback
 from tornado.log import enable_pretty_logging
+from tornado.options import options
 from typing import Union
 import argparse
 import asyncio
-import json
 import os
-import terminado
 import tornado.ioloop
 import tornado.web
 import webbrowser
@@ -78,26 +86,6 @@ class PipelineRunsPageHandler(tornado.web.RequestHandler):
 class ManagePageHandler(tornado.web.RequestHandler):
     def get(self, *args):
         self.render('manage.html')
-
-
-class ApiPipelineExecuteHandler(BaseHandler):
-    def post(self, pipeline_uuid):
-        pipeline = Pipeline.get(pipeline_uuid)
-
-        global_vars = None
-        if len(self.request.body) != 0:
-            global_vars = json.loads(self.request.body).get('global_vars')
-
-        asyncio.run(pipeline.execute(global_vars=global_vars))
-        self.write(
-            dict(
-                pipeline=pipeline.to_dict(
-                    include_outputs=True,
-                    sample_count=DATAFRAME_SAMPLE_COUNT_PREVIEW,
-                )
-            )
-        )
-        self.finish()
 
 
 class ApiSchedulerHandler(BaseHandler):
@@ -138,6 +126,7 @@ class ApiStatusHandler(BaseHandler):
             'repo_path': get_repo_path(),
             'scheduler_status': scheduler_manager.get_status(),
             'instance_type': instance_type,
+            'disable_pipeline_edit_access': is_disable_pipeline_edit_access(),
         }
         self.write(dict(status=status))
 
@@ -149,21 +138,17 @@ class ApiProjectSettingsHandler(BaseHandler):
         ]))
 
 
-class TerminalWebsocketServer(terminado.TermSocket):
-    def check_origin(self, origin):
-        return True
-
-    def open(self, url_component=None):
-        super().open(url_component)
-
-        # Turn enable-bracketed-paste off since it can mess up the output.
-        self.terminal.ptyproc.write(
-            "bind 'set enable-bracketed-paste off' # Mage terminal settings command\r")
-        self.terminal.read_buffer.clear()
-
-
 def make_app():
-    term_manager = terminado.UniqueTermManager(shell_command=['bash'])
+    shell_command = SHELL_COMMAND
+    if shell_command is None:
+        shell_command = 'bash'
+        if os.name == 'nt':
+            shell_command = 'cmd'
+    term_klass = MageTermManager
+    if USE_UNIQUE_TERMINAL:
+        term_klass = MageUniqueTermManager
+    term_manager = term_klass(shell_command=[shell_command])
+
     routes = [
         (r'/', MainPageHandler),
         (r'/pipelines', MainPageHandler),
@@ -173,6 +158,7 @@ def make_app():
         (r'/settings/(.*)', MainPageHandler),
         (r'/sign-in', MainPageHandler),
         (r'/terminal', MainPageHandler),
+        (r'/triggers', MainPageHandler),
         (r'/manage', ManagePageHandler),
         (
             r'/_next/static/(.*)',
@@ -208,12 +194,6 @@ def make_app():
         (r'/api/event_matchers', ApiEventMatcherListHandler),
         (r'/api/event_matchers/(?P<event_matcher_id>\w+)', ApiEventMatcherDetailHandler),
 
-        # Where is this used?
-        (r'/api/pipelines/(?P<pipeline_uuid>\w+)/execute', ApiPipelineExecuteHandler),
-        (
-            r'/api/pipelines/(?P<pipeline_uuid>\w+)/blocks/(?P<block_uuid>[\w\%2f\.]+)/execute',
-            ApiPipelineBlockExecuteHandler,
-        ),
         (
             r'/api/pipelines/(?P<pipeline_uuid>\w+)/blocks/(?P<block_uuid>[\w\%2f\.]+)/analyses',
             ApiPipelineBlockAnalysisHandler,
@@ -292,6 +272,9 @@ async def main(
 
     if REQUIRE_USER_AUTHENTICATION:
         print('User authentication is enabled.')
+        # We need to sleep for a few seconds after creating all the tables or else there
+        # may be an error trying to create users.
+        sleep(3)
         user = User.query.filter(User.owner == True).first()  # noqa: E712
         if not user:
             print('User with owner permission doesn’t exist, creating owner user.')
@@ -359,6 +342,8 @@ def start_server(
         init_repo(project)
     set_repo_path(project)
 
+    asyncio.run(UsageStatisticLogger().project_impression())
+
     if dbt_docs:
         run_docs_server()
     else:
@@ -368,6 +353,8 @@ def start_server(
             # Start a subprocess for scheduler
             scheduler_manager.start_scheduler()
 
+        if LoggingLevel.is_valid_level(SERVER_VERBOSITY):
+            options.logging = SERVER_VERBOSITY
         enable_pretty_logging()
 
         # Start web server

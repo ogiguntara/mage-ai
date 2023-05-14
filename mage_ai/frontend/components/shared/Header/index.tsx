@@ -24,6 +24,7 @@ import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
 import { BLUE_TRANSPARENT } from '@oracle/styles/colors/main';
 import { Branch } from '@oracle/icons';
+import { ChevronRight } from '@oracle/icons';
 import {
   HeaderStyle,
   LOGO_HEIGHT,
@@ -36,7 +37,7 @@ import { useModal } from '@context/Modal';
 
 export type BreadcrumbType = {
   bold?: boolean;
-  gradientColor?: string;
+  danger?: string;
   label: () => string;
   linkProps?: {
     href: string;
@@ -76,7 +77,7 @@ function Header({
   const {
     data: dataGitBranch,
     mutate: fetchBranch,
-  } = api.git_branches.detail('test');
+  } = api.git_branches.detail('test', {}, { revalidateOnFocus: false });
   const branch = useMemo(() => dataGitBranch?.['git_branch']?.['name'], [dataGitBranch]);
 
   const {
@@ -113,7 +114,7 @@ function Header({
 
     breadcrumbs.forEach(({
       bold,
-      gradientColor,
+      danger,
       label,
       linkProps,
     }, idx: number) => {
@@ -122,22 +123,19 @@ function Header({
 
       if (showDivider) {
         arr.push(
-          <Text
-            inline
+          <Spacing
             key={`divider-${title}`}
-            monospace
-            muted
+            mx={1}
           >
-            &nbsp;
-            /
-            &nbsp;
-          </Text>
+            <ChevronRight muted />
+          </Spacing>,
         );
       }
 
       const titleEl = (
         <Text
           bold={bold}
+          danger={danger}
           default={!bold}
           monospace
         >
@@ -149,12 +147,7 @@ function Header({
           key={`breadcrumb-${title}`}
           ml={idx === 0 ? 2 : 0}
         >
-          {gradientColor && (
-            <GradientText backgroundGradient={gradientColor}>
-              {titleEl}
-            </GradientText>
-          )}
-          {!gradientColor && titleEl}
+          {titleEl}
         </Spacing>
       );
 
@@ -225,8 +218,7 @@ function Header({
       branch={branch}
       fetchBranch={fetchBranch}
     />
-  ), {
-  }, [branch, fetchBranch], {
+  ),{}, [branch, fetchBranch], {
     background: true,
     uuid: 'git_actions',
   });

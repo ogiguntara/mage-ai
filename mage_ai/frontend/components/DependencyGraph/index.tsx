@@ -1,15 +1,18 @@
 import dynamic from 'next/dynamic';
+import { CanvasRef } from 'reaflow';
 import { ThemeContext } from 'styled-components';
 import { parse } from 'yaml';
 import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useMutation } from 'react-query';
 
 import BlockType, {
+  BLOCK_TYPES_WITH_NO_PARENTS,
   BlockLanguageEnum,
   BlockTypeEnum,
   SetEditingBlockType,
@@ -41,15 +44,18 @@ import {
 } from '@oracle/styles/units/spacing';
 import { find, indexBy, removeAtIndex } from '@utils/array';
 import { getColorsForBlockType } from '@components/CodeBlock/index.style';
-import { getModelName } from '@utils/models/dbt';
+import { getModelAttributes } from '@utils/models/dbt';
 import { isActivePort } from './utils';
 import { onSuccess } from '@api/utils/response';
 import { useDynamicUpstreamBlocks } from '@utils/models/block';
 
 const Canvas = dynamic(
   async () => {
-    const reaflow = await import('reaflow');
-    return reaflow.Canvas;
+    const { Canvas } = await import('reaflow');
+
+    return ({ forwardedRef, ...props }: any) => (
+      <Canvas ref={forwardedRef} {...props} />
+    );
   },
   {
     ssr: false,
@@ -70,17 +76,6 @@ const Edge = dynamic(
   async () => {
     const reaflow = await import('reaflow');
     return reaflow.Edge;
-  },
-  {
-    ssr: false,
-  },
-);
-
-
-const MarkerArrow = dynamic(
-  async () => {
-    const reaflow = await import('reaflow');
-    return reaflow.MarkerArrow;
   },
   {
     ssr: false,
@@ -119,6 +114,9 @@ export type DependencyGraphProps = {
   height: number;
   heightOffset?: number;
   noStatus?: boolean;
+  onClickNode?: (opts: {
+    block?: BlockType;
+  }) => void;
   pannable?: boolean;
   pipeline: PipelineType;
   runningBlocks?: BlockType[];
@@ -128,7 +126,9 @@ export type DependencyGraphProps = {
     response: any;
   }) => void;
   setSelectedBlock?: (block: BlockType) => void;
+  setZoom?: (zoom: number) => void;
   showDynamicBlocks?: boolean;
+  treeRef?: { current?: CanvasRef };
   zoomable?: boolean;
 } & SetEditingBlockType;
 
@@ -142,6 +142,7 @@ function DependencyGraph({
   height,
   heightOffset = UNIT * 10,
   noStatus,
+  onClickNode,
   pannable = true,
   pipeline,
   runningBlocks = [],
@@ -149,10 +150,15 @@ function DependencyGraph({
   setEditingBlock,
   setErrors,
   setSelectedBlock,
+  setZoom,
   showDynamicBlocks = false,
+  treeRef,
   zoomable = true,
 }: DependencyGraphProps) {
   const themeContext: ThemeType = useContext(ThemeContext);
+  const treeInnerRef = useRef<CanvasRef>(null);
+  const canvasRef = treeRef || treeInnerRef;
+
   const [edgeSelections, setEdgeSelections] = useState<string[]>([]);
   const [showPortsState, setShowPorts] = useState<boolean>(false);
   const [activePort, setActivePort] = useState<{ id: string, side: SideEnum }>(null);
@@ -167,7 +173,7 @@ function DependencyGraph({
 
   const blocksInit = useMemo(() => pipeline?.blocks?.filter(({
     type,
-  }) => BlockTypeEnum.SCRATCHPAD !== type) || [], [
+  }) => !BLOCK_TYPES_WITH_NO_PARENTS.includes(type)) || [], [
     pipeline?.blocks,
   ]);
   const dynamicUpstreamBlocksData =
@@ -215,24 +221,33 @@ function DependencyGraph({
   );
 
   const [updateBlockByDragAndDrop] = useMutation(
-    // @ts-ignore
-    ({ fromBlock, toBlock, removeDependency }:
+    ({ fromBlock, portSide, toBlock, removeDependency }:
       {
         fromBlock: BlockType;
+        portSide?: SideEnum;
         toBlock: BlockType;
         removeDependency?: boolean;
       },
-    ) => api.blocks.pipelines.useUpdate(
-      pipeline?.uuid,
-      encodeURIComponent(toBlock.uuid),
-    )({
-      block: {
-        ...toBlock,
-        upstream_blocks: removeDependency
-          ? toBlock.upstream_blocks.filter(uuid => uuid !== fromBlock.uuid)
-          : toBlock.upstream_blocks.concat(fromBlock.uuid),
-      },
-    }),
+    ) => {
+      let blockToUpdate = toBlock;
+      let upstreamBlocks = toBlock.upstream_blocks.concat(fromBlock.uuid);
+      if (!removeDependency && portSide === SideEnum.NORTH) {
+        blockToUpdate = fromBlock;
+        upstreamBlocks = fromBlock.upstream_blocks.concat(toBlock.uuid);
+      }
+
+      return api.blocks.pipelines.useUpdate(
+        pipeline?.uuid,
+        encodeURIComponent(blockToUpdate.uuid),
+      )({
+        block: {
+          ...blockToUpdate,
+          upstream_blocks: removeDependency
+            ? toBlock.upstream_blocks.filter(uuid => uuid !== fromBlock.uuid)
+            : upstreamBlocks,
+        },
+      });
+    },
     {
       onSuccess: (response: any) => onSuccess(
         response, {
@@ -300,8 +315,14 @@ function DependencyGraph({
     return mapping;
   }, [blocks]);
 
-  const displayTextForBlock = useCallback((block: BlockType): string => {
+  const displayTextForBlock = useCallback((block: BlockType): {
+    displayText: string;
+    kicker?: string;
+    subtitle?: string;
+  } => {
     let displayText;
+    let kicker;
+    let subtitle;
 
     if (PipelineTypeEnum.INTEGRATION === pipeline?.type && BlockTypeEnum.TRANSFORMER !== block.type) {
       let contentParsed: {
@@ -318,29 +339,24 @@ function DependencyGraph({
         displayText = `${block.uuid}: ${contentParsed?.destination}`;
       }
     } else if (BlockTypeEnum.DBT === block.type && BlockLanguageEnum.SQL === block.language) {
-      displayText = getModelName(block, { fullPath: true });
+      const {
+        name: modelName,
+        project,
+      } = getModelAttributes(block);
+      displayText = modelName;
+      kicker = project;
     }
-
-    const {
-      dynamic,
-      dynamicUpstreamBlock,
-      reduceOutput,
-      reduceOutputUpstreamBlock,
-    } = dynamicUpstreamBlocksData?.[block.uuid] || {};
 
     if (!displayText) {
       displayText = block.uuid;
-
-      if (dynamic) {
-        displayText = `[dynamic] ${displayText}`;
-      } else if (dynamicUpstreamBlock && !reduceOutputUpstreamBlock) {
-        displayText = `[dynamic child] ${displayText}`;
-      }
     }
 
-    return displayText;
+    return {
+      displayText,
+      kicker,
+      subtitle,
+    };
   }, [
-    dynamicUpstreamBlocksData,
     pipeline,
   ]);
 
@@ -352,10 +368,14 @@ function DependencyGraph({
     const edgesInner: EdgeType[] = [];
 
     blocks.forEach((block: BlockType) => {
-      const displayText = displayTextForBlock(block);
+      const {
+        displayText,
+        kicker,
+        subtitle,
+      } = displayTextForBlock(block);
 
       const {
-        type: blockType,
+        tags = [],
         upstream_blocks: upstreamBlocks = [],
         uuid,
       } = block;
@@ -368,7 +388,7 @@ function DependencyGraph({
           id: `${uuid}-${block2.uuid}-from`,
           side: SideEnum.SOUTH,
         })));
-      } else if (blockType !== BlockTypeEnum.DATA_EXPORTER) {
+      } else {
         ports.push({
           ...SHARED_PORT_PROPS,
           id: `${uuid}-from`,
@@ -376,7 +396,7 @@ function DependencyGraph({
         });
       }
 
-      if (upstreamBlocks.length === 0 && blockType !== BlockTypeEnum.DATA_LOADER) {
+      if (upstreamBlocks.length === 0) {
         ports.push({
           ...SHARED_PORT_PROPS,
           id: `${uuid}-to`,
@@ -400,14 +420,35 @@ function DependencyGraph({
         });
       });
 
+      let nodeHeight = 37;
+      if (tags?.length >= 1) {
+        nodeHeight += 26;
+      }
+      if (kicker) {
+        nodeHeight += 26;
+      }
+      if (subtitle) {
+        nodeHeight += 26;
+      }
+
+      let longestText = displayText;
+      [
+        kicker,
+        subtitle,
+      ].forEach((text) => {
+        if (text && text.length > longestText.length) {
+          longestText = text;
+        }
+      });
+
       nodesInner.push({
         data: {
           block,
         },
-        height: 37,
+        height: nodeHeight,
         id: uuid,
         ports,
-        width: (displayText.length * WIDTH_OF_SINGLE_CHARACTER_SMALL)
+        width: (longestText.length * WIDTH_OF_SINGLE_CHARACTER_SMALL)
           + (disabledProp ? 0 : UNIT * 5)
           + (blockEditing?.uuid === block.uuid ? (19 * WIDTH_OF_SINGLE_CHARACTER_SMALL) : 0)
           + (blockStatus?.[block.uuid]?.runtime ? 50 : 0),
@@ -458,6 +499,21 @@ function DependencyGraph({
     noStatus,
     runningBlocks,
     runningBlocksMapping,
+  ]);
+
+  const containerHeight = useMemo(() => {
+    let v = 0;
+    if (height) {
+      v += height;
+    }
+    if (heightOffset) {
+      v -= heightOffset;
+    }
+
+    return Math.max(0, v);
+  }, [
+    height,
+    heightOffset,
   ]);
 
   return (
@@ -545,7 +601,10 @@ function DependencyGraph({
         </Spacing>
       )}
 
-      <GraphContainerStyle height={height - (heightOffset)}>
+      <GraphContainerStyle
+        height={containerHeight}
+        onDoubleClick={() => canvasRef?.current?.fitCanvas?.()}
+      >
         <Canvas
           arrow={null}
           disabled={disabledProp}
@@ -582,8 +641,11 @@ function DependencyGraph({
           }}
           edges={edges}
           fit
+          forwardedRef={canvasRef}
           maxHeight={ZOOMABLE_CANVAS_SIZE}
           maxWidth={ZOOMABLE_CANVAS_SIZE}
+          maxZoom={1}
+          minZoom={-0.7}
           node={(node) => (
             <Node
               {...node}
@@ -600,7 +662,16 @@ function DependencyGraph({
                     if (blockEditing) {
                       onClickWhenEditingUpstreamBlocks(block);
                     } else {
-                      onClick(block);
+                      onClickNode?.({
+                        block,
+                      });
+
+                      // This is required because if the block is hidden, it needs to be un-hidden
+                      // before scrolling to it or else the scrollIntoView won’t scroll to the top
+                      // of the block.
+                      setTimeout(() => {
+                        onClick(block);
+                      }, 1);
                     }
                   }
                 }}
@@ -620,8 +691,8 @@ function DependencyGraph({
                         setActivePort(null);
                       }}
                       onDragStart={(e, initial, port) => {
-                        // @ts-ignore
-                        setActivePort({ id: port?.id, side: port?.side });
+                        const side = port?.side as SideEnum;
+                        setActivePort({ id: port?.id, side });
                       }}
                       onEnter={() => setShowPorts(true)}
                       rx={10}
@@ -648,6 +719,7 @@ function DependencyGraph({
               >
               {(event) => {
                 const {
+                  height: nodeHeight,
                   node: {
                     data: {
                       block,
@@ -656,10 +728,13 @@ function DependencyGraph({
                 } = event;
 
                 const blockStatus = getBlockStatus(block);
+                const {
+                  displayText,
+                } = displayTextForBlock(block);
 
                 return (
                   <foreignObject
-                    height={event.height}
+                    height={nodeHeight}
                     style={{
                       // https://reaflow.dev/?path=/story/docs-advanced-custom-nodes--page#the-foreignobject-will-steal-events-onclick-onenter-onleave-etc-that-are-bound-to-the-rect-node
                       pointerEvents: 'none',
@@ -670,7 +745,9 @@ function DependencyGraph({
                   >
                     <GraphNode
                       block={block}
+                      bodyText={`${displayText}${blockEditing?.uuid === block.uuid ? ' (editing)' : ''}`}
                       disabled={blockEditing?.uuid === block.uuid}
+                      height={nodeHeight}
                       hideStatus={disabledProp}
                       key={block.uuid}
                       selected={blockEditing
@@ -678,9 +755,7 @@ function DependencyGraph({
                         : selectedBlock?.uuid === block.uuid
                       }
                       {...blockStatus}
-                    >
-                      {displayTextForBlock(block)}{blockEditing?.uuid === block.uuid && ' (editing)'}
-                    </GraphNode>
+                    />
                   </foreignObject>
                 );
               }}
@@ -699,16 +774,21 @@ function DependencyGraph({
                   )
             );
             if (fromBlock?.upstream_blocks?.includes(toBlock.uuid)
-             || from.id === to.id
-             || isConnectingIntegrationSourceAndDestination
+              || from.id === to.id
+              || isConnectingIntegrationSourceAndDestination
             ) {
               return;
             }
 
-            // @ts-ignore
-            updateBlockByDragAndDrop({ fromBlock, toBlock });
+            const portSide = port?.side as SideEnum;
+            updateBlockByDragAndDrop({
+              fromBlock,
+              portSide: portSide || SideEnum.SOUTH,
+              toBlock,
+            });
           }}
           onNodeLinkCheck={(event, from, to) => !edges.some(e => e.from === from.id && e.to === to.id)}
+          onZoomChange={z => setZoom?.(z)}
           pannable={pannable}
           selections={edgeSelections}
           zoomable={zoomable}

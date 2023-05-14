@@ -14,6 +14,8 @@ QUERY_ROW_LIMIT = 10_000_000
 class DataSource(str, Enum):
     API = 'api'
     BIGQUERY = 'bigquery'
+    CLICKHOUSE = 'clickhouse'
+    DRUID = 'druid'
     FILE = 'file'
     GOOGLE_CLOUD_STORAGE = 'google_cloud_storage'
     KAFKA = 'kafka'
@@ -275,9 +277,9 @@ class BaseSQLDatabase(BaseIO):
         """
         return query_string.strip(' \n\t')
 
-    def _clean_column_name(self, column_name: str) -> str:
+    def _clean_column_name(self, column_name: str, allow_reserved_words: bool = False) -> str:
         col_new = re.sub(r'\W', '_', column_name.lower())
-        if col_new.upper() in SQL_RESERVED_WORDS:
+        if not allow_reserved_words and col_new.upper() in SQL_RESERVED_WORDS:
             col_new = f'_{col_new}'
         return col_new
 

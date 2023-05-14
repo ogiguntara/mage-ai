@@ -1,36 +1,47 @@
-from croniter import croniter
-from dataclasses import dataclass
+import asyncio
+import enum
+import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
-from mage_ai.data_preparation.logging.logger_manager_factory import LoggerManagerFactory
-from mage_ai.data_preparation.models.block.utils import (
-    get_all_ancestors,
-    is_dynamic_block,
-)
-from mage_ai.data_preparation.models.pipeline import Pipeline
-from mage_ai.orchestration.db import db_connection, safe_db_query
-from mage_ai.orchestration.db.models.base import Base, BaseModel
-from mage_ai.shared.array import find
-from mage_ai.shared.config import BaseConfig
-from mage_ai.shared.dates import compare
-from mage_ai.shared.hash import ignore_keys, index_by
-from mage_ai.shared.utils import clean_name
+from typing import Dict, List
+
+import pytz
+from croniter import croniter
 from sqlalchemy import (
-    Column,
+    JSON,
     Boolean,
+    Column,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Table,
 )
 from sqlalchemy.orm import joinedload, relationship, validates
 from sqlalchemy.sql import func
-from typing import Dict, List
-import enum
-import uuid
 
+from mage_ai.data_preparation.logging.logger_manager_factory import LoggerManagerFactory
+from mage_ai.data_preparation.models.block.utils import (
+    get_all_ancestors,
+    is_dynamic_block,
+)
+from mage_ai.data_preparation.models.constants import ExecutorType
+from mage_ai.data_preparation.models.pipeline import Pipeline
+from mage_ai.data_preparation.models.triggers import (
+    ScheduleInterval,
+    ScheduleStatus,
+    ScheduleType,
+    SettingsConfig,
+    Trigger,
+)
+from mage_ai.orchestration.db import db_connection, safe_db_query
+from mage_ai.orchestration.db.models.base import Base, BaseModel
+from mage_ai.shared.array import find
+from mage_ai.shared.dates import compare
+from mage_ai.shared.hash import ignore_keys, index_by
+from mage_ai.shared.utils import clean_name
+from mage_ai.usage_statistics.logger import UsageStatisticLogger
 
 pipeline_schedule_event_matcher_association_table = Table(
     'pipeline_schedule_event_matcher_association',
@@ -41,29 +52,8 @@ pipeline_schedule_event_matcher_association_table = Table(
 
 
 class PipelineSchedule(BaseModel):
-    class ScheduleStatus(str, enum.Enum):
-        ACTIVE = 'active'
-        INACTIVE = 'inactive'
-
-    class ScheduleType(str, enum.Enum):
-        API = 'api'
-        EVENT = 'event'
-        TIME = 'time'
-
-    class ScheduleInterval(str, enum.Enum):
-        ONCE = '@once'
-        HOURLY = '@hourly'
-        DAILY = '@daily'
-        WEEKLY = '@weekly'
-        MONTHLY = '@monthly'
-
-    @dataclass
-    class SettingsConfig(BaseConfig):
-        skip_if_previous_running: bool = False
-        allow_blocks_to_fail: bool = False
-
     name = Column(String(255))
-    pipeline_uuid = Column(String(255))
+    pipeline_uuid = Column(String(255), index=True)
     schedule_type = Column(Enum(ScheduleType))
     start_time = Column(DateTime(timezone=True), default=None)
     schedule_interval = Column(String(50))
@@ -84,7 +74,11 @@ class PipelineSchedule(BaseModel):
 
     def get_settings(self) -> 'SettingsConfig':
         settings = self.settings if self.settings else dict()
-        return self.__class__.SettingsConfig.load(config=settings)
+        return SettingsConfig.load(config=settings)
+
+    @property
+    def pipeline(self) -> 'Pipeline':
+        return Pipeline.get(self.pipeline_uuid)
 
     @property
     def pipeline_runs_count(self) -> int:
@@ -93,7 +87,7 @@ class PipelineSchedule(BaseModel):
     @validates('schedule_interval')
     def validate_schedule_interval(self, key, schedule_interval):
         if schedule_interval and schedule_interval not in \
-                [e.value for e in self.__class__.ScheduleInterval]:
+                [e.value for e in ScheduleInterval]:
             if not croniter.is_valid(schedule_interval):
                 raise ValueError('Cron expression is invalid.')
 
@@ -108,7 +102,7 @@ class PipelineSchedule(BaseModel):
     @classmethod
     @safe_db_query
     def active_schedules(self, pipeline_uuids: List[str] = None) -> List['PipelineSchedule']:
-        query = self.query.filter(self.status == self.ScheduleStatus.ACTIVE)
+        query = self.query.filter(self.status == ScheduleStatus.ACTIVE)
         if pipeline_uuids is not None:
             query = query.filter(PipelineSchedule.pipeline_uuid.in_(pipeline_uuids))
         return query.all()
@@ -120,11 +114,41 @@ class PipelineSchedule(BaseModel):
         model = super().create(**kwargs)
         return model
 
+    @classmethod
+    @safe_db_query
+    def create_or_update(self, trigger_config: Trigger):
+        try:
+            existing_trigger = PipelineSchedule.query.filter(
+                self.name == trigger_config.name,
+                self.pipeline_uuid == trigger_config.pipeline_uuid,
+            ).one_or_none()
+        except Exception:
+            traceback.print_exc()
+            existing_trigger = None
+
+        kwargs = dict(
+            name=trigger_config.name,
+            pipeline_uuid=trigger_config.pipeline_uuid,
+            schedule_type=trigger_config.schedule_type,
+            start_time=trigger_config.start_time,
+            schedule_interval=trigger_config.schedule_interval,
+            status=trigger_config.status,
+            variables=trigger_config.variables,
+            sla=trigger_config.sla,
+            settings=trigger_config.settings,
+        )
+
+        if existing_trigger:
+            existing_trigger.update(**kwargs)
+        else:
+            self.create(**kwargs)
+
     def current_execution_date(self) -> datetime:
+        now = datetime.now(timezone.utc)
+
         if self.schedule_interval is None:
             return None
 
-        now = datetime.now(timezone.utc)
         if self.schedule_interval == '@once':
             return now
         elif self.schedule_interval == '@daily':
@@ -142,7 +166,7 @@ class PipelineSchedule(BaseModel):
 
     @safe_db_query
     def should_schedule(self) -> bool:
-        if self.status != self.__class__.ScheduleStatus.ACTIVE:
+        if self.status != ScheduleStatus.ACTIVE:
             return False
 
         if self.start_time is not None and compare(datetime.now(), self.start_time) == -1:
@@ -154,7 +178,12 @@ class PipelineSchedule(BaseModel):
             return False
 
         if self.schedule_interval == '@once':
-            if len(self.pipeline_runs) == 0:
+            pipeline_run_count = len(self.pipeline_runs)
+            if pipeline_run_count == 0:
+                return True
+            executor_count = self.pipeline.executor_count
+            # Used by streaming pipeline to launch multiple executors
+            if executor_count > 1 and pipeline_run_count < executor_count:
                 return True
         else:
             """
@@ -164,7 +193,10 @@ class PipelineSchedule(BaseModel):
             if current_execution_date is None:
                 return False
             if not find(
-                lambda x: compare(x.execution_date, current_execution_date) == 0,
+                lambda x: compare(
+                    x.execution_date.replace(tzinfo=pytz.UTC),
+                    current_execution_date,
+                ) == 0,
                 self.pipeline_runs
             ):
                 return True
@@ -189,6 +221,7 @@ class PipelineRun(BaseModel):
     event_variables = Column(JSON)
     metrics = Column(JSON)
     backfill_id = Column(Integer, ForeignKey('backfill.id'))
+    executor_type = Column(Enum(ExecutorType), default=ExecutorType.LOCAL_PYTHON)
 
     pipeline_schedule = relationship(PipelineSchedule, back_populates='pipeline_runs')
     block_runs = relationship('BlockRun', back_populates='pipeline_run')
@@ -281,7 +314,31 @@ class PipelineRun(BaseModel):
             PipelineRun.passed_sla.is_(False),
         ).all()
 
-    def create_block_run(self, block_uuid: str, **kwargs) -> 'BlockRun':
+    @safe_db_query
+    def complete(self):
+        self.update(
+            completed_at=datetime.now(),
+            status=self.PipelineRunStatus.COMPLETED,
+        )
+
+        asyncio.run(UsageStatisticLogger().pipeline_runs_impression(
+            lambda: self.query.filter(self.status == self.PipelineRunStatus.COMPLETED).count(),
+        ))
+
+    @safe_db_query
+    def create_block_run(
+        self,
+        block_uuid: str,
+        skip_if_exists: bool = False,
+        **kwargs,
+    ) -> 'BlockRun':
+        if skip_if_exists:
+            br = BlockRun.get(
+                pipeline_run_id=self.id,
+                block_uuid=block_uuid,
+            )
+            if br is not None:
+                return br
         return BlockRun.create(
             block_uuid=block_uuid,
             pipeline_run_id=self.id,
@@ -362,6 +419,7 @@ class BlockRun(BaseModel):
         db_connection.session.commit()
 
     @classmethod
+    @safe_db_query
     def get(self, pipeline_run_id: int = None, block_uuid: str = None) -> 'BlockRun':
         block_runs = self.query.filter(
             BlockRun.pipeline_run_id == pipeline_run_id,
@@ -402,7 +460,7 @@ class EventMatcher(BaseModel):
     def active_event_matchers(self) -> List['EventMatcher']:
         return self.query.filter(
             EventMatcher.pipeline_schedules.any(
-                PipelineSchedule.status == PipelineSchedule.ScheduleStatus.ACTIVE
+                PipelineSchedule.status == ScheduleStatus.ACTIVE
             )
         ).all()
 
@@ -457,6 +515,7 @@ class EventMatcher(BaseModel):
 
             if event_matcher.event_type == EventMatcher.EventType.AWS_EVENT:
                 from mage_ai.services.aws.events.events import update_event_rule_targets
+
                 # For AWS event, update related AWS infra (add trigger to lambda function)
                 update_event_rule_targets(event_matcher.name)
 
@@ -464,7 +523,7 @@ class EventMatcher(BaseModel):
 
     def active_pipeline_schedules(self) -> List[PipelineSchedule]:
         return [p for p in self.pipeline_schedules
-                if p.status == PipelineSchedule.ScheduleStatus.ACTIVE]
+                if p.status == ScheduleStatus.ACTIVE]
 
     def match(self, config: Dict) -> bool:
         def __match_dict(sub_pattern, sub_config):

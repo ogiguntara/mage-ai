@@ -7,4 +7,7 @@ class GitBranchPresenter(BasePresenter):
         'status',
         'message',
         'action_type',
+        'files',
+        'modified_files',
+        'untracked_files',
     ]

@@ -1,7 +1,8 @@
 import { ThemeContext } from 'styled-components';
 import { useContext } from 'react';
 
-import BlockType from '@interfaces/BlockType';
+import Badge from '@oracle/components/Badge';
+import BlockType, { BlockTypeEnum } from '@interfaces/BlockType';
 import Circle from '@oracle/elements/Circle';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Spacing from '@oracle/elements/Spacing';
@@ -16,14 +17,18 @@ import {
 import { NodeStyle, RuntimeStyle } from './index.style';
 import { ThemeType } from '@oracle/styles/themes/constants';
 import { UNIT } from '@oracle/styles/units/spacing';
+import { buildTags } from '@components/CodeBlock/utils';
 import { getColorsForBlockType } from '@components/CodeBlock/index.style';
+import { getModelAttributes } from '@utils/models/dbt';
 import { getRuntimeText } from './utils';
 
 type GraphNodeProps = {
   block: BlockType;
-  children: any;
+  bodyText?: string;
+  children?: any;
   disabled?: boolean;
   hasFailed?: boolean;
+  height?: number;
   hideStatus?: boolean;
   isCancelled?: boolean;
   isInProgress?: boolean;
@@ -36,9 +41,11 @@ type GraphNodeProps = {
 
 function GraphNode({
   block,
+  bodyText,
   children,
   disabled,
   hasFailed,
+  height,
   hideStatus,
   isCancelled,
   isInProgress,
@@ -54,6 +61,7 @@ function GraphNode({
     type,
     uuid,
   } = block;
+  const tags = buildTags(block);
 
   const noStatus = !(isInProgress || isQueued || hasFailed || isSuccessful || isCancelled);
   const success = isSuccessful && !(isInProgress || isQueued);
@@ -71,6 +79,19 @@ function GraphNode({
     tooltipText = 'Cancelled execution';
   }
 
+  const inverted = INVERTED_TEXT_COLOR_BLOCK_TYPES.includes(type)
+    || INVERTED_TEXT_COLOR_BLOCK_COLORS.includes(color);
+
+  let kicker;
+  let subtitle;
+
+  if (BlockTypeEnum.DBT === type) {
+    const {
+      project,
+    } = getModelAttributes(block);
+    kicker = project;
+  }
+
   return (
     <NodeStyle
       backgroundColor={getColorsForBlockType(
@@ -78,11 +99,15 @@ function GraphNode({
         { blockColor: color, theme: themeContext },
       ).accent}
       disabled={disabled}
+      height={height}
       isCancelled={isCancelled}
       key={uuid}
       selected={selected}
     >
-      <FlexContainer alignItems="center">
+      <FlexContainer
+        alignItems="center"
+        fullHeight
+      >
         {runtime && (
           <RuntimeStyle
             backgroundColor={getColorsForBlockType(
@@ -137,21 +162,60 @@ function GraphNode({
         )}
 
         <FlexContainer
-          alignItems="center"
+          flexDirection="column"
           justifyContent="center"
           style={{
-            padding: '8px 0',
             height: '100%',
+            padding: '8px 0',
           }}
         >
-          <Text
-            inverted={INVERTED_TEXT_COLOR_BLOCK_TYPES.includes(type)
-              || INVERTED_TEXT_COLOR_BLOCK_COLORS.includes(color)}
-            monospace
-            small
-          >
-            {children}
-          </Text>
+          {kicker && (
+            <Text
+              bold
+              inverted={inverted}
+              monospace
+              xsmall
+            >
+              {kicker}
+            </Text>
+          )}
+          {bodyText && (
+            <Text
+              inverted={inverted}
+              monospace
+              small
+            >
+              {bodyText}
+            </Text>
+          )}
+          {children}
+          {tags?.length >= 1 && (
+            <FlexContainer alignItems="center">
+              {tags.reduce((acc, {
+                title,
+              }, idx) => {
+                if (idx >= 1) {
+                  acc.push(
+                    <div key={`space-${title}`}>
+                      &nbsp;
+                    </div>,
+                  );
+                }
+
+                acc.push(
+                  <Badge
+                    inverted={!inverted}
+                    key={`badge-${title}`}
+                    xxsmall
+                  >
+                    {title}
+                  </Badge>,
+                );
+
+                return acc;
+              }, [])}
+            </FlexContainer>
+          )}
         </FlexContainer>
       </FlexContainer>
     </NodeStyle>

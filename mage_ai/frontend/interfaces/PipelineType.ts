@@ -26,6 +26,7 @@ export enum PipelineStatusEnum {
   ACTIVE = 'active',    // At least one active trigger
   INACTIVE = 'inactive',    // All inactive triggers
   NO_SCHEDULES = 'no_schedules',    // No triggers
+  RETRY = 'retry',
 }
 
 export enum PipelineQueryEnum {
@@ -53,6 +54,7 @@ export interface PipelineExtensionsType {
 export default interface PipelineType {
   actions?: TransformerActionType[];
   blocks?: BlockType[];
+  callbacks?: BlockType[];
   data_integration?: {
     catalog: CatalogType;
   };
@@ -65,4 +67,5 @@ export default interface PipelineType {
   type?: PipelineTypeEnum;
   updated_at?: string;
   uuid: string;
+  widgets?: BlockType[];
 }

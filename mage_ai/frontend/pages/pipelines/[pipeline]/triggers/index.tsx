@@ -4,12 +4,13 @@ import { useMutation } from 'react-query';
 import { useRouter } from 'next/router';
 
 import Button from '@oracle/elements/Button';
-import DependencyGraph from '@components/DependencyGraph';
+import DependencyGraph, { DependencyGraphProps } from '@components/DependencyGraph';
 import Divider from '@oracle/elements/Divider';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
 import KeyboardShortcutButton from '@oracle/elements/Button/KeyboardShortcutButton';
 import Link from '@oracle/elements/Link';
+import Paginate, { ROW_LIMIT } from '@components/shared/Paginate';
 import PipelineDetailPage from '@components/PipelineDetailPage';
 import PipelineScheduleType, {
   ScheduleIntervalEnum,
@@ -20,6 +21,7 @@ import PrivateRoute from '@components/shared/PrivateRoute';
 import RunPipelinePopup from '@components/Triggers/RunPipelinePopup';
 import RuntimeVariables from '@components/RuntimeVariables';
 import Spacing from '@oracle/elements/Spacing';
+import Spinner from '@oracle/components/Spinner';
 import Text from '@oracle/elements/Text';
 import Tooltip from '@oracle/components/Tooltip';
 import TriggersTable from '@components/Triggers/Table';
@@ -29,6 +31,7 @@ import {
   Add,
   PlayButton,
 } from '@oracle/icons';
+import { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
 import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
 import { PageNameEnum } from '@components/PipelineDetailPage/constants';
 import { dateFormatLong } from '@utils/date';
@@ -36,6 +39,7 @@ import { getFormattedVariables } from '@components/Sidekick/utils';
 import { isEmptyObject } from '@utils/hash';
 import { isViewer } from '@utils/session';
 import { onSuccess } from '@api/utils/response';
+import { queryFromUrl, queryString } from '@utils/url';
 import { randomNameGenerator } from '@utils/string';
 import { useModal } from '@context/Modal';
 
@@ -55,12 +59,24 @@ function PipelineSchedules({
 
   const {
     data: dataGlobalVariables,
-  } = api.variables.pipelines.list(pipelineUUID);
+  } = api.variables.pipelines.list(pipelineUUID, {}, {
+    revalidateOnFocus: false,
+  });
   const globalVariables = dataGlobalVariables?.variables;
+
+  const q = queryFromUrl();
+  const page = q?.page ? q.page : 0;
   const {
     data: dataPipelineSchedules,
     mutate: fetchPipelineSchedules,
-  } = api.pipeline_schedules.pipelines.list(pipelineUUID, {}, { refreshInterval: 7500 });
+  } = api.pipeline_schedules.pipelines.list(
+    pipelineUUID,
+    {
+      _limit: ROW_LIMIT,
+      _offset: (q?.page ? q.page : 0) * ROW_LIMIT,
+    },
+    { refreshInterval: 7500 },
+  );
   const pipelineSchedules: PipelineScheduleType[] =
     useMemo(() => dataPipelineSchedules?.pipeline_schedules || [], [dataPipelineSchedules]);
 
@@ -96,7 +112,7 @@ function PipelineSchedules({
   const variablesOrig = useMemo(() => (
     getFormattedVariables(
       globalVariables,
-      block => block.uuid === 'global',
+      block => block.uuid === GLOBAL_VARIABLES_UUID,
     )?.reduce((acc, { uuid, value }) => ({
       ...acc,
       [uuid]: value,
@@ -138,8 +154,8 @@ function PipelineSchedules({
       ? selectedSchedule?.variables
       : !isEmptyObject(variablesOrig) ? variablesOrig : null;
 
-    return props => {
-      const dependencyGraphHeight = props.height - (showVariables ? 151 : 0);
+    return (props: DependencyGraphProps) => {
+      const dependencyGraphHeight = props.height - (showVariables ? 151 : 80);
 
       return (
         <>
@@ -183,9 +199,14 @@ function PipelineSchedules({
       );
     };
   }, [
-    globalVariables,
-    selectedSchedule,
+    isViewerRole,
+    pipelineUUID,
+    selectedSchedule?.schedule_type,
+    selectedSchedule?.variables,
+    variablesOrig,
   ]);
+
+  const totalTriggers = useMemo(() => dataPipelineSchedules?.metadata?.count || [], [dataPipelineSchedules]);
 
   return (
     <PipelineDetailPage
@@ -256,15 +277,41 @@ function PipelineSchedules({
 
       <Divider light mt={PADDING_UNITS} short />
 
-      <TriggersTable
-        fetchPipelineSchedules={fetchPipelineSchedules}
-        pipeline={pipeline}
-        pipelineSchedules={pipelineSchedules}
-        selectedSchedule={selectedSchedule}
-        setErrors={setErrors}
-        setSelectedSchedule={setSelectedSchedule}
-      />
-
+      {!dataPipelineSchedules
+        ?
+          <Spacing m={2}>
+            <Spinner inverted />
+          </Spacing>
+        :
+          <>
+            <TriggersTable
+              fetchPipelineSchedules={fetchPipelineSchedules}
+              pipeline={pipeline}
+              pipelineSchedules={pipelineSchedules}
+              selectedSchedule={selectedSchedule}
+              setErrors={setErrors}
+              setSelectedSchedule={setSelectedSchedule}
+            />
+            <Spacing p={2}>
+              <Paginate
+                maxPages={9}
+                onUpdate={(p) => {
+                  const newPage = Number(p);
+                  const updatedQuery = {
+                    ...q,
+                    page: newPage >= 0 ? newPage : 0,
+                  };
+                  router.push(
+                    '/pipelines/[pipeline]/triggers',
+                    `/pipelines/${pipelineUUID}/triggers?${queryString(updatedQuery)}`,
+                  );
+                }}
+                page={Number(page)}
+                totalPages={Math.ceil(totalTriggers / ROW_LIMIT)}
+              />
+            </Spacing>
+          </>
+      }
     </PipelineDetailPage>
   );
 }

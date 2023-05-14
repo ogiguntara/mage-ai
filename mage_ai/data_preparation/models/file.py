@@ -20,6 +20,8 @@ INACCESSIBLE_DIRS = frozenset(['__pycache__'])
 MAX_DEPTH = 30
 MAX_NUMBER_OF_FILE_VERSIONS = int(os.getenv('MAX_NUMBER_OF_FILE_VERSIONS', 100) or 100)
 
+PIPELINES_FOLDER_PREFIX = f'pipelines{os.sep}'
+
 
 class File:
     def __init__(
@@ -116,10 +118,19 @@ class File:
         filename: str,
     ) -> Tuple[str, str]:
         return os.path.join(
-            f'{repo_path}/{FILE_VERSIONS_DIR}',
-            dir_path.replace(repo_path, f'{repo_path}/{FILE_VERSIONS_DIR}'),
+            repo_path,
+            FILE_VERSIONS_DIR,
+            dir_path.replace(repo_path, os.path.join(repo_path, FILE_VERSIONS_DIR)),
             filename,
         )
+
+    @classmethod
+    def validate_content(self, dir_path, filename, content):
+        if dir_path.startswith(PIPELINES_FOLDER_PREFIX) and filename == 'triggers.yaml':
+            from mage_ai.data_preparation.models.triggers import load_trigger_configs
+
+            pipeline_uuid = dir_path[len(PIPELINES_FOLDER_PREFIX):]
+            load_trigger_configs(content, pipeline_uuid=pipeline_uuid, raise_exception=True)
 
     @classmethod
     def write_preprocess(
@@ -194,9 +205,10 @@ class File:
             file_version_only=file_version_only,
             overwrite=overwrite,
         ):
-            with open(file_path, write_type) as f:
+            with open(file_path, write_type, encoding='utf-8') as f:
                 if content:
                     f.write(content)
+        self.validate_content(dir_path, filename, content)
 
     @classmethod
     async def write_async(
@@ -218,7 +230,7 @@ class File:
             file_version_only=file_version_only,
             overwrite=overwrite,
         ):
-            async with aiofiles.open(file_path, mode=write_type) as fp:
+            async with aiofiles.open(file_path, mode=write_type, encoding='utf-8') as fp:
                 await fp.write(content)
 
     def exists(self) -> bool:
@@ -226,7 +238,7 @@ class File:
 
     def content(self):
         try:
-            with open(self.file_path) as fp:
+            with open(self.file_path, encoding='utf-8') as fp:
                 file_content = fp.read()
             return file_content
         except FileNotFoundError as err:
@@ -235,7 +247,7 @@ class File:
 
     async def content_async(self):
         try:
-            async with aiofiles.open(self.file_path, mode='r') as fp:
+            async with aiofiles.open(self.file_path, mode='r', encoding='utf-8') as fp:
                 file_content = await fp.read()
             return file_content
         except FileNotFoundError as err:

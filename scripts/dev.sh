@@ -62,6 +62,11 @@ case $key in
     shift # past argument
     shift # past value
     ;;
+    --require-user-authentication)
+    REQUIRE_USER_AUTHENTICATION=1
+    shift # past argument
+    shift # past value
+    ;;
     *)    # unknown option
     POSITIONAL+=("$1") # save it in an array for later
     shift # past argument
@@ -90,8 +95,19 @@ export DATABASE_CONNECTION_URL=$DATABASE_CONNECTION_URL
 export MAX_NUMBER_OF_FILE_VERSIONS=$MAX_NUMBER_OF_FILE_VERSIONS
 export REQUIRE_USER_AUTHENTICATION=$REQUIRE_USER_AUTHENTICATION
 
-HOST=$HOST \
-PORT=$PORT \
-PROJECT=$PROJECT_NAME \
-MANAGE_INSTANCE=$MANAGE_INSTANCE \
-docker-compose -f docker-compose.yml up
+if command -v docker-compose &> /dev/null
+then
+    # docker-compose exists
+    HOST=$HOST \
+    PORT=$PORT \
+    PROJECT=$PROJECT_NAME \
+    MANAGE_INSTANCE=$MANAGE_INSTANCE \
+    docker-compose -f docker-compose.yml up
+else
+    # docker-compose does not exist
+    HOST=$HOST \
+    PORT=$PORT \
+    PROJECT=$PROJECT_NAME \
+    MANAGE_INSTANCE=$MANAGE_INSTANCE \
+    docker compose -f docker-compose.yml up
+fi

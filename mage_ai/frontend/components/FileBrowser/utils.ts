@@ -1,3 +1,5 @@
+import * as osPath from 'path';
+
 import BlockType, {
   BlockTypeEnum,
   BLOCK_TYPES,
@@ -27,14 +29,14 @@ export function getFullPath(
     if (currentPath?.length >= 1) {
       parts.push(currentPath);
     }
-    return getFullPath(file.parent, parts.join('/'));
+    return getFullPath(file.parent, parts.join(osPath.sep));
   }
 
   return currentPath;
 }
 
 export function removeRootFromFilePath(filePath: string): string {
-  return filePath?.split('/').slice(1).join('/');
+  return filePath?.split(osPath.sep).slice(1).join(osPath.sep);
 }
 
 export function getFullPathWithoutRootFolder(
@@ -53,7 +55,7 @@ export function getBlockFromFile(
 ) {
   // parts example:
   // ['default_repo', 'data_loaders', 'team', 'foo.py']
-  let parts = getFullPath(file, currentPathInit).split('/');
+  let parts = getFullPath(file, currentPathInit).split(osPath.sep);
 
   if (!parts) {
     return null;
@@ -62,7 +64,7 @@ export function getBlockFromFile(
   let blockType;
   // This happens when you open a file from the file browser and edit it on the notebook UI
   if (parts.length === 1) {
-    parts = file?.path?.split('/');
+    parts = file?.path?.split(osPath.sep);
     if (parts) {
       if (parts[0] === BlockTypeEnum.CUSTOM) {
         blockType = parts[0];
@@ -92,7 +94,7 @@ export function getBlockFromFile(
   if (parts.length >= 3) {
     // ['default_repo', 'data_loaders', 'team', 'foo.py'] becomes
     // team/foo.py
-    fileName = parts.slice(2, parts.length).join('/');
+    fileName = parts.slice(2, parts.length).join(osPath.sep);
   } else {
     fileName = parts[parts.length - 1];
   }
@@ -107,13 +109,13 @@ export function getBlockFromFile(
   ].join('|');
   const extensionRegex = new RegExp(`${extensions}$`);
   if (BLOCK_TYPES.concat(BlockTypeEnum.DBT).includes(blockType) && fileName.match(extensionRegex)) {
-    const parts = fileName.split('.');
-    const extension = parts[1];
+    const idx = fileName.lastIndexOf('.');
+    const extension = fileName.slice(idx + 1);
 
     return {
       language: FILE_EXTENSION_TO_LANGUAGE_MAPPING[extension],
       type: blockType,
-      uuid: parts[0],
+      uuid: fileName.slice(0, idx),
     };
   }
 }
@@ -122,7 +124,7 @@ export function getNonPythonBlockFromFile(
   file: FileType,
   currentPathInit: string = null,
 ): BlockType {
-  const parts = getFullPath(file, currentPathInit).split('/');
+  const parts = getFullPath(file, currentPathInit).split(osPath.sep);
   if (!parts[1]) {
     return;
   }
@@ -135,6 +137,7 @@ export function getNonPythonBlockFromFile(
   const yamlRegex = new RegExp(`\.${FileExtensionEnum.YAML}$`);
   const rRegex = new RegExp(`\.${FileExtensionEnum.R}$`);
   const sqlRegex = new RegExp(`\.${FileExtensionEnum.SQL}$`);
+  const mdRegex = new RegExp(`\.${FileExtensionEnum.MD}$`);
   if (fileName.match(yamlRegex) && YAML_BLOCK_TYPES.includes(blockType)) {
     return {
       type: blockType,
@@ -154,6 +157,11 @@ export function getNonPythonBlockFromFile(
     return {
       type: blockType,
       uuid: blockUUID,
+    };
+  } else if (fileName.match(mdRegex) && blockType === BlockTypeEnum.MARKDOWN) {
+    return {
+      type: blockType,
+      uuid: fileName.replace(mdRegex, ''),
     };
   }
 }

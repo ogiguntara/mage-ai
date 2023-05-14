@@ -20,6 +20,7 @@ import PipelineRunsTable from '@components/PipelineDetail/Runs/Table';
 import PrivateRoute from '@components/shared/PrivateRoute';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
+import Spinner from '@oracle/components/Spinner';
 import api from '@api';
 import buildTableSidekick, {
   TABS as TABS_SIDEKICK,
@@ -30,10 +31,11 @@ import {
   BlocksSeparated,
   PipelineRun,
 } from '@oracle/icons';
+import { OFFSET_PARAM, goToWithQuery } from '@utils/routing';
 import { PageNameEnum } from '@components/PipelineDetailPage/constants';
+import { PipelineStatusEnum, PipelineTypeEnum } from '@interfaces/PipelineType';
 import { RunStatus as RunStatusEnum } from '@interfaces/BlockRunType';
 import { UNIT } from '@oracle/styles/units/spacing';
-import { goToWithQuery } from '@utils/routing';
 import { ignoreKeys, isEqual } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
 import { queryFromUrl, queryString } from '@utils/url';
@@ -57,7 +59,8 @@ const TABS = [
   TAB_BLOCK_RUNS,
 ];
 
-const LIMIT = 25;
+const LIMIT = 30;
+const MAX_PAGES = 9;
 
 type PipelineRunsProp = {
   pipeline: {
@@ -72,12 +75,17 @@ function PipelineRuns({
   const [errors, setErrors] = useState<ErrorsType>(null);
   const [selectedTab, setSelectedTab] = useState<TabType>(TAB_PIPELINE_RUNS);
   const [selectedTabSidekick, setSelectedTabSidekick] = useState<TabType>(TABS_SIDEKICK[0]);
+  const [selectedRuns, setSelectedRuns] = useState<{ [keyof: string]: PipelineRunType }>({});
   const [query, setQuery] = useState<{
     offset?: number;
     pipeline_run_id?: number;
     pipeline_uuid?: string;
     status?: RunStatusEnum;
   }>(null);
+  const isPipelineRunsTab = useMemo(
+    () => TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid,
+    [selectedTab?.uuid],
+  );
 
   const pipelineUUID = pipelineProp.uuid;
   const { data: dataPipeline } = api.pipelines.detail(pipelineUUID, {
@@ -94,15 +102,11 @@ function PipelineRuns({
     pipelineUUID,
   ]);
 
-  const { data: dataBlockRuns } = api.block_runs.list(ignoreKeys(query, [TAB_URL_PARAM]), {}, {
-    pauseFetch: !query,
-  });
-  const blockRuns = useMemo(() => dataBlockRuns?.block_runs || [], [dataBlockRuns]);
-
   const [selectedRun, setSelectedRun] = useState<PipelineRunType>();
 
   const q = queryFromUrl();
   const qPrev = usePrevious(q);
+  const page = q?.page ? q.page : 0;
   useEffect(() => {
     const {
       pipeline_run_id: pipelineRunId,
@@ -125,6 +129,7 @@ function PipelineRuns({
       }
 
       setQuery(newQuery);
+      setSelectedRuns({});
     }
   }, [
     pipelineUUID,
@@ -132,23 +137,58 @@ function PipelineRuns({
     qPrev,
   ]);
 
-  const pipelineRunsRequestQuery: PipelineRunReqQueryParamsType = {
+  const runsRequestQuery: PipelineRunReqQueryParamsType = {
     _limit: LIMIT,
-    _offset: (q?.page ? q.page : 0) * LIMIT,
+    _offset: page * LIMIT,
     pipeline_uuid: pipelineUUID,
+  };
+  let blockRunsRequestQuery = ignoreKeys(
+    { ...query, ...runsRequestQuery },
+    [TAB_URL_PARAM, 'page'],
+  );
+  if (isPipelineRunsTab) {
+    blockRunsRequestQuery = ignoreKeys(blockRunsRequestQuery, [OFFSET_PARAM]);
+  }
+  const { data: dataBlockRuns } = api.block_runs.list(
+    blockRunsRequestQuery,
+    {},
+    { pauseFetch: !query },
+  );
+  const blockRuns = useMemo(() => dataBlockRuns?.block_runs || [], [dataBlockRuns]);
+
+  let pipelineRunsRequestQuery = {
+    ...runsRequestQuery,
   };
   if (q?.status) {
     pipelineRunsRequestQuery.status = q.status;
   }
+  if (!isPipelineRunsTab) {
+    pipelineRunsRequestQuery = ignoreKeys(pipelineRunsRequestQuery, [OFFSET_PARAM]);
+  }
   const {
     data: dataPipelineRuns,
     mutate: fetchPipelineRuns,
-  } = api.pipeline_runs.list(pipelineRunsRequestQuery, { refreshInterval: 5000 });
+  } = api.pipeline_runs.list(
+    pipelineRunsRequestQuery,
+    { refreshInterval: 5000 },
+  );
   const pipelineRuns: PipelineRunType[] = useMemo(() => dataPipelineRuns?.pipeline_runs || [], [dataPipelineRuns]);
-  const totalRuns: number = useMemo(() => dataPipelineRuns?.metadata?.count || [], [dataPipelineRuns]);
-  const hasRunningPipeline = pipelineRuns.some(({ status }) => (
+  const totalRuns: number = useMemo(() => isPipelineRunsTab
+    ? dataPipelineRuns?.metadata?.count || []
+    : dataBlockRuns?.metadata?.count || [],
+    [
+      dataBlockRuns?.metadata?.count,
+      dataPipelineRuns?.metadata?.count,
+      isPipelineRunsTab,
+    ],
+  );
+  const hasRunningPipeline = useMemo(() => pipelineRuns.some(({ status }) => (
     status === RunStatusEnum.INITIAL || status === RunStatusEnum.RUNNING
-  ));
+  )), [pipelineRuns]);
+  const selectedRunsArr = useMemo(() => (
+    Object.values(selectedRuns || {})
+      .filter((val) => val !== null)
+  ), [selectedRuns]);
 
   const [updatePipeline, { isLoading: isLoadingUpdatePipeline }]: any = useMutation(
     api.pipelines.useUpdate(pipelineUUID),
@@ -156,6 +196,7 @@ function PipelineRuns({
       onSuccess: (response: any) => onSuccess(
         response, {
           callback: () => {
+            setSelectedRuns({});
             fetchPipelineRuns();
           },
           onErrorCallback: (response, errors) => setErrors({
@@ -179,70 +220,82 @@ function PipelineRuns({
     selectedTabPrev,
   ]);
 
-  const tablePipelineRuns = useMemo(() => {
-    const page = q?.page ? q.page : 0;
-
-    return (
-      <>
-        <PipelineRunsTable
-          fetchPipelineRuns={fetchPipelineRuns}
-          onClickRow={(rowIndex: number) => setSelectedRun((prev) => {
-            const run = pipelineRuns[rowIndex];
-
-            return prev?.id !== run.id ? run : null;
-          })}
-          pipelineRuns={pipelineRuns}
-          selectedRun={selectedRun}
-          setErrors={setErrors}
-        />
-        <Spacing p={2}>
-          <Paginate
-            maxPages={9}
-            onUpdate={(p) => {
-              const newPage = Number(p);
-              const updatedQuery = {
-                ...q,
-                page: newPage >= 0 ? newPage : 0,
-              };
-              router.push(
-                '/pipelines/[pipeline]/runs',
-                `/pipelines/${pipelineUUID}/runs?${queryString(updatedQuery)}`,
-              );
-            }}
-            page={Number(page)}
-            totalPages={Math.ceil(totalRuns / LIMIT)}
-          />
-        </Spacing>
-      </>
-    );
-  }, [
-    fetchPipelineRuns,
-    pipeline,
-    pipelineRuns,
+  const paginationEl = useMemo(() => (
+    <Spacing p={2}>
+      <Paginate
+        maxPages={MAX_PAGES}
+        onUpdate={(p) => {
+          const newPage = Number(p);
+          const updatedQuery = {
+            ...q,
+            page: newPage >= 0 ? newPage : 0,
+          };
+          router.push(
+            '/pipelines/[pipeline]/runs',
+            `/pipelines/${pipelineUUID}/runs?${queryString(updatedQuery)}`,
+          );
+        }}
+        page={Number(page)}
+        totalPages={Math.ceil(totalRuns / LIMIT)}
+      />
+    </Spacing>
+  ), [
+    page,
+    pipelineUUID,
     q,
-    selectedRun,
+    router,
     totalRuns,
+  ]);
+  const tablePipelineRuns = useMemo(() => (
+    <>
+      <PipelineRunsTable
+        allowBulkSelect={pipeline?.type !== PipelineTypeEnum.STREAMING}
+        fetchPipelineRuns={fetchPipelineRuns}
+        onClickRow={(rowIndex: number) => setSelectedRun((prev) => {
+          const run = pipelineRuns[rowIndex];
+
+          return prev?.id !== run.id ? run : null;
+        })}
+        pipelineRuns={pipelineRuns}
+        selectedRun={selectedRun}
+        selectedRuns={selectedRuns}
+        setErrors={setErrors}
+        setSelectedRuns={setSelectedRuns}
+      />
+      {paginationEl}
+    </>
+  ), [
+    fetchPipelineRuns,
+    paginationEl,
+    pipeline?.type,
+    pipelineRuns,
+    selectedRun,
+    selectedRuns,
   ]);
 
   const tableBlockRuns = useMemo(() => (
-    <BlockRunsTable
-      blockRuns={blockRuns}
-      pipeline={pipeline}
-    />
+    <>
+      <BlockRunsTable
+        blockRuns={blockRuns}
+        pipeline={pipeline}
+      />
+      {paginationEl}
+    </>
   ), [
     blockRuns,
+    paginationEl,
     pipeline,
   ]);
 
   return (
     <PipelineDetailPage
-      afterHidden={TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid && !selectedRun}
+      afterHidden={isPipelineRunsTab && !selectedRun}
       breadcrumbs={[
         {
           label: () => 'Runs',
         },
       ]}
-      buildSidekick={TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid
+      buildSidekick={isPipelineRunsTab
         ? props => buildTableSidekick({
           ...props,
           selectedRun,
@@ -261,7 +314,7 @@ function PipelineRuns({
       <PageSectionHeader>
         <Spacing py={1}>
           <FlexContainer alignItems="center">
-            {(hasRunningPipeline && TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid) &&
+            {(hasRunningPipeline && isPipelineRunsTab) &&
               <Spacing pl={2}>
                 <Button
                   danger
@@ -279,6 +332,26 @@ function PipelineRuns({
                 </Button>
               </Spacing>
             }
+
+            {selectedRunsArr.length > 0 &&
+              <Spacing pl={2}>
+                <Button
+                  loading={isLoadingUpdatePipeline}
+                  onClick={() => {
+                    updatePipeline({
+                      pipeline: {
+                        pipeline_runs: selectedRunsArr,
+                        status: PipelineStatusEnum.RETRY,
+                      },
+                    });
+                  }}
+                  primary
+                >
+                  Retry selected runs ({selectedRunsArr.length})
+                </Button>
+              </Spacing>
+            }
+
             <ButtonTabs
               onClickTab={({ uuid }) => {
                 setQuery(null);
@@ -287,7 +360,8 @@ function PipelineRuns({
               selectedTabUUID={selectedTab?.uuid}
               tabs={TABS}
             />
-            {TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid &&
+
+            {isPipelineRunsTab &&
               <Select
                 compact
                 defaultColor
@@ -324,8 +398,17 @@ function PipelineRuns({
         </Spacing>
       </PageSectionHeader>
 
-      {TAB_PIPELINE_RUNS.uuid === selectedTab?.uuid && tablePipelineRuns}
-      {TAB_BLOCK_RUNS.uuid === selectedTab?.uuid && tableBlockRuns}
+      {(!dataPipelineRuns && !dataBlockRuns)
+        ?
+          <Spacing m={3}>
+            <Spinner inverted />
+          </Spacing>
+        :
+          <>
+            {isPipelineRunsTab && tablePipelineRuns}
+            {TAB_BLOCK_RUNS.uuid === selectedTab?.uuid && tableBlockRuns}
+          </>
+      }
     </PipelineDetailPage>
   );
 }

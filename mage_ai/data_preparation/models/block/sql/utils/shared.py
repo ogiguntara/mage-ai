@@ -1,12 +1,35 @@
 from jinja2 import Template
+from mage_ai.data_preparation.models.block.sql.constants import (
+    CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION,
+    CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION_TABLE_NAME,
+)
 from mage_ai.data_preparation.models.constants import BlockLanguage, BlockType
 from mage_ai.data_preparation.repo_manager import get_repo_path
 from mage_ai.data_preparation.variable_manager import get_variable
 from mage_ai.io.config import ConfigFileLoader
 from os import path
 from pandas import DataFrame
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 import re
+
+
+def build_variable_pattern(variable_name: str):
+    return r'{}[ ]*{}[ ]*{}'.format(r'\{\{', variable_name, r'\}\}')
+
+
+def blocks_in_query(block, query: str) -> Dict:
+    blocks = {}
+
+    if not query:
+        return blocks
+
+    for idx, upstream_block in enumerate(block.upstream_blocks):
+        pattern = build_variable_pattern(f'df_{idx + 1}')
+
+        if re.findall(pattern, query):
+            blocks[upstream_block.uuid] = upstream_block
+
+    return blocks
 
 
 def should_cache_data_from_upstream(
@@ -22,9 +45,6 @@ def should_cache_data_from_upstream(
         # TODO (tommy dang): check to see if the upstream block has the same data source
         return True
 
-    if BlockLanguage.SQL == block.language and BlockLanguage.SQL != upstream_block.language:
-        return True
-
     config_path = path.join(get_repo_path(), 'io_config.yaml')
 
     config1 = block.configuration or {}
@@ -33,17 +53,34 @@ def should_cache_data_from_upstream(
     data_provider1 = config1.get('data_provider_profile')
     data_provider2 = config2.get('data_provider_profile')
 
-    if config1.get('use_raw_sql'):
-        return False
+    # if config1.get('use_raw_sql'):
+    #     return False
+
+    if BlockLanguage.SQL == block.language and BlockLanguage.SQL != upstream_block.language:
+        return True
 
     loader1 = ConfigFileLoader(config_path, data_provider1)
     loader2 = ConfigFileLoader(config_path, data_provider2)
 
-    return not all([config1.get(k) == config2.get(k) for k in config_keys]) \
-        or not all([loader1.config.get(k) == loader2.config.get(k) for k in config_profile_keys])
+    return not all([
+        config1.get(k) and
+        config2.get(k) and
+        config1.get(k) == config2.get(k) for k in config_keys
+    ]) or not all([
+        loader1.config.get(k) and
+        loader2.config.get(k) and
+        loader1.config.get(k) == loader2.config.get(k) for k in config_profile_keys
+    ])
 
 
-def interpolate_input(block, query, replace_func=None):
+def interpolate_input(
+    block,
+    query: str,
+    replace_func: Callable = None,
+    get_database: Callable = None,
+    get_schema: Callable = None,
+    get_table: Callable = None,
+) -> str:
     def __replace_func(db, schema, tn):
         if replace_func:
             return replace_func(db, schema, tn)
@@ -65,7 +102,7 @@ def interpolate_input(block, query, replace_func=None):
         is_same_data_providers = data_provider1 == data_provider2
 
         if block.configuration.get('use_raw_sql'):
-            if data_provider1 != data_provider2:
+            if is_sql and data_provider1 != data_provider2:
                 raise Exception(
                     f'Variable interpolation when using raw SQL for {matcher1} '
                     'is not supported because '
@@ -74,13 +111,30 @@ def interpolate_input(block, query, replace_func=None):
                     f'({data_provider1}). Please disable using raw SQL and try again.',
                 )
 
-        if is_same_data_providers:
-            database = configuration.get('data_provider_database', '')
-            schema = configuration.get('data_provider_schema', '')
-        else:
-            database = block.configuration.get('data_provider_database', '')
-            schema = block.configuration.get('data_provider_schema', '')
-        replace_with = __replace_func(database, schema, upstream_block.table_name)
+        database, schema, table_name = table_name_parts(block.configuration, upstream_block)
+
+        config_to_use = configuration if is_same_data_providers else block.configuration
+        if not database:
+            database = config_to_use.get('data_provider_database')
+        if not schema:
+            schema = config_to_use.get('data_provider_schema')
+
+        if not database and get_database:
+            database = get_database(dict(configuration=configuration))
+
+        if not schema and get_schema:
+            schema = get_schema(dict(configuration=configuration))
+
+        if not table_name:
+            table_name = upstream_block.table_name
+
+        if get_table:
+            table_name = get_table(dict(
+                configuration=configuration,
+                table=table_name,
+            ))
+
+        replace_with = __replace_func(database, schema, table_name)
 
         upstream_block_content = upstream_block.content
         if is_sql and \
@@ -91,10 +145,10 @@ def interpolate_input(block, query, replace_func=None):
             upstream_query = interpolate_input(upstream_block, upstream_block_content)
             replace_with = f"""(
     {upstream_query}
-) AS {upstream_block.table_name}"""
+) AS {table_name}"""
 
         query = re.sub(
-            '{}[ ]*df_{}[ ]*{}'.format(r'\{\{', idx + 1, r'\}\}'),
+            build_variable_pattern(f'df_{idx + 1}'),
             replace_with,
             query,
         )
@@ -111,6 +165,41 @@ def interpolate_vars(query, global_vars=dict()):
     return Template(query).render(**global_vars)
 
 
+def table_name_parts(
+    configuration: Dict,
+    upstream_block,
+    no_schema: bool = False,
+) -> Tuple[str, str, str]:
+    database = None
+    schema = None
+    table = None
+
+    full_table_name = configuration.get(
+        CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION,
+        {},
+    ).get(
+        upstream_block.uuid,
+        {},
+    ).get(CONFIG_KEY_UPSTREAM_BLOCK_CONFIGURATION_TABLE_NAME)
+
+    if full_table_name:
+        parts = full_table_name.split('.')
+        if len(parts) == 3:
+            database, schema, table = parts
+        elif len(parts) == 2:
+            schema, table = parts
+        elif len(parts) == 1:
+            table = parts[0]
+
+    if not table:
+        table = upstream_block.table_name
+
+    if not schema and not no_schema:
+        schema = configuration.get('data_provider_schema')
+
+    return database, schema, table
+
+
 def create_upstream_block_tables(
     loader,
     block,
@@ -120,6 +209,8 @@ def create_upstream_block_tables(
     cache_upstream_dbt_models: bool = False,
     cache_keys: List[str] = [],
     no_schema: bool = False,
+    query: str = None,
+    schema_name: str = None,
 ):
     from mage_ai.data_preparation.models.block.dbt.utils import (
         parse_attributes,
@@ -127,14 +218,16 @@ def create_upstream_block_tables(
     )
     configuration = configuration if configuration else block.configuration
 
+    mapping = blocks_in_query(block, query)
     for idx, upstream_block in enumerate(block.upstream_blocks):
+        if query and upstream_block.uuid not in mapping:
+            continue
+
         if should_cache_data_from_upstream(block, upstream_block, [
             'data_provider',
         ], cache_keys):
             if BlockType.DBT == upstream_block.type and not cache_upstream_dbt_models:
                 continue
-
-            table_name = upstream_block.table_name
 
             df = get_variable(
                 upstream_block.pipeline.uuid,
@@ -143,30 +236,40 @@ def create_upstream_block_tables(
                 partition=execution_partition,
             )
 
+            no_data = False
             if type(df) is DataFrame:
                 if len(df.index) == 0:
-                    continue
+                    no_data = True
             elif type(df) is dict and len(df) == 0:
-                continue
+                no_data = True
             elif type(df) is list and len(df) == 0:
-                continue
+                no_data = True
             elif not df:
+                no_data = True
+
+            if no_data:
+                print(f'\n\nNo data in upstream block {upstream_block.uuid}.')
                 continue
 
-            if no_schema:
-                schema_name = None
-            else:
-                schema_name = configuration.get('data_provider_schema')
+            _, schema, table_name = table_name_parts(
+                configuration,
+                upstream_block,
+                no_schema=no_schema,
+            )
+
+            if not schema and not no_schema:
+                schema = schema_name
 
             if BlockType.DBT == block.type and BlockType.DBT != upstream_block.type:
                 if not no_schema:
                     attributes_dict = parse_attributes(block)
-                    schema_name = attributes_dict['source_name']
+                    schema = attributes_dict['source_name']
                 table_name = source_table_name_for_block(upstream_block)
 
-            full_table_name = table_name
-            if schema_name:
-                full_table_name = f'{schema_name}.{full_table_name}'
+            full_table_name = '.'.join(list(filter(lambda x: x, [
+                schema,
+                table_name,
+            ])))
 
             print(f'\n\nExporting data from upstream block {upstream_block.uuid} '
                   f'to {full_table_name}.')
@@ -174,7 +277,7 @@ def create_upstream_block_tables(
             loader.export(
                 df,
                 table_name=table_name,
-                schema_name=schema_name,
+                schema_name=schema,
                 cascade_on_drop=cascade_on_drop,
                 drop_table_on_replace=True,
                 if_exists='replace',
@@ -216,13 +319,23 @@ def remove_comments(text: str) -> str:
 
 
 def extract_create_statement_table_name(text: str) -> str:
+    create_table_pattern = r'create table(?: if not exists)*'
+
     statement_partial, _ = extract_and_replace_text_between_strings(
         remove_comments(text),
-        r'create table(?: if not exists)*',
+        create_table_pattern,
         r'\(',
     )
     if not statement_partial:
         return None
+
+    match1 = re.match(create_table_pattern, statement_partial, re.IGNORECASE)
+    if match1:
+        idx_start, idx_end = match1.span()
+        new_statement = statement_partial[0:idx_start] + statement_partial[idx_end:]
+        match2 = re.search(r'[^\s]+', new_statement.strip())
+        if match2:
+            return match2.group(0)
 
     parts = statement_partial[:len(statement_partial) - 1].strip().split(' ')
     return parts[-1]

@@ -1,6 +1,6 @@
+import { useCallback, useState } from 'react';
 import { useMutation } from 'react-query';
 import { useRouter } from 'next/router';
-import { useState } from 'react';
 
 import ApiErrorType from '@interfaces/ApiErrorType';
 import AuthToken from '@api/utils/AuthToken';
@@ -18,9 +18,10 @@ import {
   KEY_SYMBOL_ENTER,
 } from '@utils/hooks/keyboardShortcuts/constants';
 import { PADDING_HORIZONTAL_UNITS } from '@oracle/styles/units/spacing';
+import { ignoreKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
-import { queryFromUrl } from '@utils/url';
+import { queryFromUrl, queryString } from '@utils/url';
 import { setUser } from '@utils/session';
 
 const KEY_EMAIL = 'email';
@@ -41,7 +42,7 @@ function SignForm({
     [KEY_PASSWORD]?: string;
   }>({});
 
-  const [create, { isLoading }] = useMutation(
+  const [createRequest, { isLoading }] = useMutation(
     api.sessions.useCreate(),
     {
       onSuccess: (response: any) => onSuccess(
@@ -54,10 +55,13 @@ function SignForm({
           }) => {
             setUser(user);
             AuthToken.storeToken(token, () => {
-            let url: string = '/pipelines';
-            if (typeof window !== 'undefined' && queryFromUrl(window.location.href).redirect_url) {
-              url = queryFromUrl(window.location.href).redirect_url;
-            }
+              let url: string = '/pipelines';
+              const query = queryFromUrl(window.location.href);
+
+              if (typeof window !== 'undefined' && query.redirect_url) {
+                url = `${query.redirect_url}?${queryString(ignoreKeys(query, ['redirect_url']))}`;
+              }
+
               router.push(url);
             });
           },
@@ -68,6 +72,10 @@ function SignForm({
       ),
     },
   );
+
+  const create = useCallback(payload => AuthToken.logout(() => createRequest(payload)), [
+    createRequest,
+  ]);
 
   return (
     <Row fullHeight>
